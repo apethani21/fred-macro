@@ -1,9 +1,12 @@
 """Email delivery via AWS SES (or dry-run to state/last_email.html).
 
-SES credentials use the standard boto3 credential chain:
-  1. Environment variables: AWS_ACCESS_KEY_ID, AWS_SECRET_ACCESS_KEY
-  2. ~/.aws/credentials (standard INI)
-  3. ~/keys/aws/credentials (INI, same format) — set explicitly if present
+Credential resolution (live send):
+  1. ~/keys/aws/ses-credentials.json  → SMTP delivery (smtp-username / smtp-password)
+  2. ~/keys/aws/credentials (INI)     → boto3 SES API (aws_access_key_id / aws_secret_access_key)
+  3. Standard boto3 chain             → env vars, ~/.aws/credentials, instance metadata
+
+SMTP is preferred when the JSON credentials file is present (typical EC2 setup).
+boto3 is used on local dev where IAM API keys may be configured instead.
 
 Charts are embedded as inline MIME attachments (Content-ID references) so
 they render inline in most email clients without a separate download.
@@ -170,6 +173,32 @@ def _build_mime(composed: ComposedEmail, from_addr: str, to_addr: str) -> MIMEMu
 
 
 def _send_ses(composed: ComposedEmail, cfg: DeliveryConfig) -> None:
+    smtp_cred_file = Path.home() / "keys" / "aws" / "ses-credentials.json"
+    if smtp_cred_file.exists():
+        _send_smtp(composed, cfg, smtp_cred_file)
+    else:
+        _send_boto3(composed, cfg)
+
+
+def _send_smtp(composed: ComposedEmail, cfg: DeliveryConfig, cred_file: Path) -> None:
+    import json
+    import smtplib
+
+    creds = json.loads(cred_file.read_text())
+    username = creds["smtp-username"]
+    password = creds["smtp-password"]
+    host = f"email-smtp.{cfg.ses_region}.amazonaws.com"
+
+    msg = _build_mime(composed, cfg.email_from, cfg.email_to)
+    with smtplib.SMTP(host, 587) as smtp:
+        smtp.ehlo()
+        smtp.starttls()
+        smtp.login(username, password)
+        smtp.sendmail(cfg.email_from, [cfg.email_to], msg.as_bytes())
+    logger.info("Email sent via SMTP (%s).", host)
+
+
+def _send_boto3(composed: ComposedEmail, cfg: DeliveryConfig) -> None:
     ses = _ses_client(cfg.ses_region)
     msg = _build_mime(composed, cfg.email_from, cfg.email_to)
     response = ses.send_raw_email(
@@ -177,4 +206,4 @@ def _send_ses(composed: ComposedEmail, cfg: DeliveryConfig) -> None:
         Destinations=[cfg.email_to],
         RawMessage={"Data": msg.as_bytes()},
     )
-    logger.info("Email sent. MessageId: %s", response["MessageId"])
+    logger.info("Email sent via boto3 SES. MessageId: %s", response["MessageId"])
