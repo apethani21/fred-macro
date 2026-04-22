@@ -1,0 +1,134 @@
+#!/usr/bin/env python3
+"""Refresh FRED series data.
+
+Common modes:
+  python scripts/refresh_data.py --series DGS10 DGS2 --partition daily
+      Explicit list (dev / debug).
+
+  python scripts/refresh_data.py --discover
+      Re-run discovery policies, save the universe, refresh every series in it.
+
+  python scripts/refresh_data.py
+      Incremental refresh using the previously-discovered universe in
+      data/metadata.parquet. No-op if discovery has never run.
+
+  python scripts/refresh_data.py --release-calendar
+      Refresh data/release_calendar.parquet and data/release_series.parquet.
+      Combinable with the modes above.
+"""
+from __future__ import annotations
+
+import argparse
+import logging
+import sys
+from pathlib import Path
+
+PROJECT_ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(PROJECT_ROOT))
+
+import pandas as pd
+
+from src.ingest.discovery import DiscoveryConfig, discover, universe_by_frequency
+from src.ingest.fred_client import FredClient
+from src.ingest.paths import DISCOVERY_PATH, METADATA_PATH
+from src.ingest.release_calendar import refresh_release_calendar, refresh_release_series
+from src.ingest.storage import load_parquet, save_parquet_atomic
+from src.ingest.update import refresh_series, refresh_universe
+
+
+def _universe_from_metadata() -> dict[str, list[str]]:
+    meta = load_parquet(METADATA_PATH)
+    if meta is None or meta.empty:
+        return {}
+    out: dict[str, list[str]] = {}
+    for freq, group in meta.dropna(subset=["frequency_short"]).groupby("frequency_short"):
+        out[freq] = group["series_id"].tolist()
+    return out
+
+
+def _run_discovery(client: FredClient, args) -> dict[str, list[str]]:
+    cfg = DiscoveryConfig(
+        top_n_per_category=args.top_n,
+        max_category_depth=args.max_depth,
+        max_series_per_release=args.max_per_release,
+    )
+    df = discover(client, cfg)
+    save_parquet_atomic(df, DISCOVERY_PATH)
+    uni = universe_by_frequency(df)
+    total = sum(len(v) for v in uni.values())
+    print(
+        f"Discovery: {len(df)} provenance rows, {total} unique series across "
+        f"{len(uni)} frequencies."
+    )
+    for freq, ids in sorted(uni.items()):
+        print(f"  {freq}: {len(ids)} series")
+    return uni
+
+
+def main() -> int:
+    logging.basicConfig(
+        level=logging.INFO,
+        format="%(asctime)s %(levelname)s %(name)s: %(message)s",
+    )
+
+    parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    parser.add_argument("--series", nargs="+", help="Explicit series IDs (dev mode).")
+    parser.add_argument(
+        "--partition",
+        default="daily",
+        choices=["daily", "weekly", "monthly", "quarterly", "annual"],
+        help="Partition for --series.",
+    )
+    parser.add_argument("--discover", action="store_true", help="Re-run discovery before refresh.")
+    parser.add_argument("--top-n", type=int, default=10, help="Top-N series per category (with --discover).")
+    parser.add_argument("--max-depth", type=int, default=3, help="Max category tree depth (with --discover).")
+    parser.add_argument("--max-per-release", type=int, default=200, help="Max series per release (with --discover).")
+    parser.add_argument("--release-calendar", action="store_true", help="Also refresh the release calendar.")
+    parser.add_argument("--skip-refresh", action="store_true", help="Run discovery/calendar but don't refresh series data.")
+    args = parser.parse_args()
+
+    client = FredClient()
+
+    # --- release calendar (cheap; do first so it's independent of refresh success) ---
+    if args.release_calendar:
+        cal = refresh_release_calendar(client)
+        release_ids = sorted({int(r) for r in cal["release_id"].unique()}) if not cal.empty else []
+        if release_ids:
+            refresh_release_series(client, release_ids)
+
+    # --- determine universe ---
+    if args.series:
+        universe = {args.partition: list(args.series)}
+    elif args.discover:
+        universe = _run_discovery(client, args)
+    else:
+        universe = _universe_from_metadata()
+        if not universe:
+            print("No universe found. Run with --discover first, or pass --series explicitly.")
+            return 1 if not args.release_calendar else 0
+
+    if args.skip_refresh:
+        return 0
+
+    # --- refresh ---
+    if args.series:
+        summary = refresh_series(args.series, client, partition=args.partition)
+        print(f"Refreshed {len(summary.per_series)} series [{args.partition}]:")
+        print(summary.report())
+        return 1 if summary.errors else 0
+
+    results = refresh_universe(universe, client)
+    total_errors = 0
+    for partition, summary in results.items():
+        errs = len(summary.errors)
+        total_errors += errs
+        ok = len(summary.per_series) - errs
+        print(f"[{partition}] {ok} ok, {errs} errors")
+        if errs:
+            for r in summary.errors:
+                print(f"    {r.series_id}: {r.error}")
+    return 1 if total_errors else 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

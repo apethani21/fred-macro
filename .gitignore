@@ -1,0 +1,17 @@
+.env
+.DS_Store
+.claude/
+logs/
+__pycache__/
+*.pyc
+*.pyo
+*.egg-info/
+.pytest_cache/
+.ipynb_checkpoints/
+
+# Project-local, not synced across environments
+CLAUDE.md
+data/
+knowledge/
+state/
+prompts/
