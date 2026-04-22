@@ -39,6 +39,8 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from src.compose.composer import compose_email
 from src.deliver.sender import DeliveryConfig, send_email, config_from_env
+from src.monitor.health import build_health_snapshot
+from src.monitor.run_log import RunLogger
 from src.research.findings import read_findings_md
 from src.select.selector import LessonPick, pick_lesson, record_lesson_sent
 
@@ -70,7 +72,7 @@ def _pick(args: argparse.Namespace, today: date) -> LessonPick:
     return pick_lesson(today=today)
 
 
-def main() -> None:
+def main() -> int:
     args = _parse_args()
     today = date.fromisoformat(args.today) if args.today else date.today()
 
@@ -80,36 +82,47 @@ def main() -> None:
 
     logger.info("Today: %s | dry_run: %s", today.isoformat(), cfg.dry_run)
 
-    # 1. Select
-    logger.info("Selecting lesson...")
-    pick = _pick(args, today)
-    logger.info("Selected: %s [%s] — %s", pick.finding.slug, pick.finding.kind, pick.reason)
+    with RunLogger("send_daily", dry_run=cfg.dry_run) as run:
+        # 1. Select
+        logger.info("Selecting lesson...")
+        pick = _pick(args, today)
+        logger.info("Selected: %s [%s] — %s", pick.finding.slug, pick.finding.kind, pick.reason)
+        run.set("slug", pick.finding.slug)
+        run.set("kind", pick.finding.kind)
+        run.set("reason", pick.reason)
 
-    # 2. Compose
-    logger.info("Composing email via Claude (%s)...", "claude-sonnet-4-6")
-    composed = compose_email(pick, today=today)
-    logger.info(
-        "Draft ready. Approved: %s. Flags: %d",
-        composed.approved,
-        len(composed.fact_check_flags),
-    )
+        # 2. Compose
+        logger.info("Composing email via Claude (%s)...", "claude-sonnet-4-6")
+        composed = compose_email(pick, today=today)
+        approved = composed.approved
+        flags = len(composed.fact_check_flags)
+        logger.info("Draft ready. Approved: %s. Flags: %d", approved, flags)
+        run.set("approved", approved)
+        run.set("fact_check_flags", flags)
 
-    if not composed.approved:
-        logger.error("Draft failed fact-check (approved=False). Flags:")
-        for fl in composed.fact_check_flags:
-            logger.error("  • %s", fl)
-        logger.error("Email not sent. Fix finding or re-run with --force-finding after investigation.")
-        sys.exit(1)
+        if not approved:
+            logger.error("Draft failed fact-check (approved=False). Flags:")
+            for fl in composed.fact_check_flags:
+                logger.error("  • %s", fl)
+            logger.error("Email not sent. Fix finding or re-run with --force-finding after investigation.")
+            run.set("exit_code", 1)
+            build_health_snapshot()
+            return 1
 
-    # 3. Deliver
-    logger.info("Delivering email...")
-    send_email(composed, cfg, today=today)
+        # 3. Deliver
+        logger.info("Delivering email...")
+        send_email(composed, cfg, today=today)
 
-    # 4. Record (only on actual send or explicit dry-run that completed cleanly)
-    if not args.force_finding:
-        record_lesson_sent(pick.finding, today=today)
-        logger.info("Lesson recorded: %s", pick.finding.slug)
+        # 4. Record (only on actual send or explicit dry-run that completed cleanly)
+        if not args.force_finding:
+            record_lesson_sent(pick.finding, today=today)
+            logger.info("Lesson recorded: %s", pick.finding.slug)
+
+        run.set("exit_code", 0)
+
+    build_health_snapshot()
+    return 0
 
 
 if __name__ == "__main__":
-    main()
+    sys.exit(main())

@@ -42,11 +42,19 @@ def main() -> int:
                         help="Max relevant articles to process per source (default: 10).")
     args = parser.parse_args()
 
+    from src.monitor.health import build_health_snapshot
+    from src.monitor.run_log import RunLogger
     from src.research.harvest import harvest_all
 
     sources = [args.source] if args.source else None
-    n = harvest_all(dry_run=args.dry_run, max_per_source=args.max_per_source, sources=sources)
-    print(f"\nHarvest complete. {n} new finding(s) {'would be ' if args.dry_run else ''}written.")
+    with RunLogger("run_harvest", dry_run=args.dry_run) as run:
+        run.set("sources", sources or ["feds_notes", "liberty_street", "sf_fed"])
+        run.set("max_per_source", args.max_per_source)
+        n = harvest_all(dry_run=args.dry_run, max_per_source=args.max_per_source, sources=sources)
+        run.set("new_findings", n)
+        print(f"\nHarvest complete. {n} new finding(s) {'would be ' if args.dry_run else ''}written.")
+
+    build_health_snapshot()
     return 0
 
 

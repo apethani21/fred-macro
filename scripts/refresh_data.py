@@ -34,6 +34,8 @@ from src.ingest.paths import DISCOVERY_PATH, METADATA_PATH
 from src.ingest.release_calendar import refresh_release_calendar, refresh_release_series
 from src.ingest.storage import load_parquet, save_parquet_atomic
 from src.ingest.update import refresh_series, refresh_universe
+from src.monitor.health import build_health_snapshot
+from src.monitor.run_log import RunLogger
 
 
 def _universe_from_metadata() -> dict[str, list[str]]:
@@ -87,47 +89,68 @@ def main() -> int:
     parser.add_argument("--skip-refresh", action="store_true", help="Run discovery/calendar but don't refresh series data.")
     args = parser.parse_args()
 
-    client = FredClient()
+    exit_code = 0
+    with RunLogger("refresh_data") as run:
+        client = FredClient()
 
-    # --- release calendar (cheap; do first so it's independent of refresh success) ---
-    if args.release_calendar:
-        cal = refresh_release_calendar(client)
-        release_ids = sorted({int(r) for r in cal["release_id"].unique()}) if not cal.empty else []
-        if release_ids:
-            refresh_release_series(client, release_ids)
+        # --- release calendar (cheap; do first so it's independent of refresh success) ---
+        if args.release_calendar:
+            cal = refresh_release_calendar(client)
+            release_ids = sorted({int(r) for r in cal["release_id"].unique()}) if not cal.empty else []
+            if release_ids:
+                refresh_release_series(client, release_ids)
+            run.set("calendar_updated", True)
+            run.set("release_count", len(release_ids))
 
-    # --- determine universe ---
-    if args.series:
-        universe = {args.partition: list(args.series)}
-    elif args.discover:
-        universe = _run_discovery(client, args)
-    else:
-        universe = _universe_from_metadata()
-        if not universe:
-            print("No universe found. Run with --discover first, or pass --series explicitly.")
-            return 1 if not args.release_calendar else 0
+        # --- determine universe ---
+        if args.series:
+            universe = {args.partition: list(args.series)}
+        elif args.discover:
+            universe = _run_discovery(client, args)
+        else:
+            universe = _universe_from_metadata()
+            if not universe:
+                print("No universe found. Run with --discover first, or pass --series explicitly.")
+                exit_code = 1 if not args.release_calendar else 0
+                run.set("exit_code", exit_code)
+                build_health_snapshot()
+                return exit_code
 
-    if args.skip_refresh:
-        return 0
+        if args.skip_refresh:
+            build_health_snapshot()
+            return 0
 
-    # --- refresh ---
-    if args.series:
-        summary = refresh_series(args.series, client, partition=args.partition)
-        print(f"Refreshed {len(summary.per_series)} series [{args.partition}]:")
-        print(summary.report())
-        return 1 if summary.errors else 0
+        # --- refresh ---
+        if args.series:
+            summary = refresh_series(args.series, client, partition=args.partition)
+            print(f"Refreshed {len(summary.per_series)} series [{args.partition}]:")
+            print(summary.report())
+            errs = len(summary.errors)
+            run.set("series_ok", len(summary.per_series) - errs)
+            run.set("series_errors", errs)
+            exit_code = 1 if summary.errors else 0
+        else:
+            results = refresh_universe(universe, client)
+            total_errors = 0
+            total_ok = 0
+            for partition, summary in results.items():
+                errs = len(summary.errors)
+                ok = len(summary.per_series) - errs
+                total_errors += errs
+                total_ok += ok
+                print(f"[{partition}] {ok} ok, {errs} errors")
+                if errs:
+                    for r in summary.errors:
+                        print(f"    {r.series_id}: {r.error}")
+            run.set("series_ok", total_ok)
+            run.set("series_errors", total_errors)
+            run.set("partitions", len(results))
+            exit_code = 1 if total_errors else 0
 
-    results = refresh_universe(universe, client)
-    total_errors = 0
-    for partition, summary in results.items():
-        errs = len(summary.errors)
-        total_errors += errs
-        ok = len(summary.per_series) - errs
-        print(f"[{partition}] {ok} ok, {errs} errors")
-        if errs:
-            for r in summary.errors:
-                print(f"    {r.series_id}: {r.error}")
-    return 1 if total_errors else 0
+        run.set("exit_code", exit_code)
+
+    build_health_snapshot()
+    return exit_code
 
 
 if __name__ == "__main__":

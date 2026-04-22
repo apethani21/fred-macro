@@ -31,6 +31,8 @@ from pathlib import Path
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(PROJECT_ROOT))
 
+from src.monitor.health import build_health_snapshot
+from src.monitor.run_log import RunLogger
 from src.research import scan as research_scan
 
 
@@ -61,38 +63,48 @@ def main() -> int:
 
     today = date.fromisoformat(args.today) if args.today else date.today()
 
-    # Enrich mode: run web research on existing findings and exit.
-    if args.enrich:
-        from pathlib import Path as _Path
-        from src.research.enrich import enrich_all
-        findings_path = PROJECT_ROOT / "knowledge" / "findings.md"
-        if not findings_path.exists():
-            print("knowledge/findings.md not found — run a scan first.")
-            return 1
-        n = enrich_all(
-            findings_path,
-            dry_run=args.dry_run,
-            slug_filter=args.slug,
-            skip_sourced=not args.overwrite,
+    mode = "enrich" if args.enrich else "scan"
+    with RunLogger("run_research", dry_run=args.dry_run) as run:
+        run.set("mode", mode)
+
+        # Enrich mode: run web research on existing findings and exit.
+        if args.enrich:
+            from src.research.enrich import enrich_all
+            findings_path = PROJECT_ROOT / "knowledge" / "findings.md"
+            if not findings_path.exists():
+                print("knowledge/findings.md not found — run a scan first.")
+                build_health_snapshot()
+                return 1
+            n = enrich_all(
+                findings_path,
+                dry_run=args.dry_run,
+                slug_filter=args.slug,
+                skip_sourced=not args.overwrite,
+            )
+            run.set("enriched", n)
+            print(f"Enriched {n} finding(s).")
+            build_health_snapshot()
+            return 0
+
+        if args.dry_run:
+            from src.research import findings as F
+            F.write_findings_md = lambda *a, **kw: (0, 0)        # type: ignore[assignment]
+            F.append_stats = lambda *a, **kw: None                # type: ignore[assignment]
+            research_scan.append_stats = F.append_stats           # type: ignore[assignment]
+            research_scan.write_findings_md = F.write_findings_md # type: ignore[assignment]
+
+        report = research_scan.run_scan(
+            pairs=pairs,
+            notable_watchlist=args.notable,
+            today=today,
+            overwrite_findings=args.overwrite,
         )
-        print(f"Enriched {n} finding(s).")
-        return 0
+        run.set("hits", len(report.hits))
+        run.set("findings", len(report.findings))
+        run.set("skipped", len(report.skipped))
+        print(report.summary())
 
-    if args.dry_run:
-        # Import lazily so we can monkeypatch the I/O functions.
-        from src.research import findings as F
-        F.write_findings_md = lambda *a, **kw: (0, 0)        # type: ignore[assignment]
-        F.append_stats = lambda *a, **kw: None                # type: ignore[assignment]
-        research_scan.append_stats = F.append_stats           # type: ignore[assignment]
-        research_scan.write_findings_md = F.write_findings_md # type: ignore[assignment]
-
-    report = research_scan.run_scan(
-        pairs=pairs,
-        notable_watchlist=args.notable,
-        today=today,
-        overwrite_findings=args.overwrite,
-    )
-    print(report.summary())
+    build_health_snapshot()
     return 0
 
 
