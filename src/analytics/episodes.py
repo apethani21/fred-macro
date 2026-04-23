@@ -138,6 +138,148 @@ def slice_to_episode(series_or_df, name: str):
     return series_or_df.loc[s_ts:e_ts]
 
 
+# ---- M1: Inflation Episode Cross-Sectional Analysis ----
+
+@dataclass(frozen=True)
+class InflationEpisode:
+    idx: int
+    start: pd.Timestamp
+    end: pd.Timestamp
+    peak_date: pd.Timestamp
+    peak_value: float
+    duration_months: int
+    driver: str              # "demand" | "supply" | "mixed"
+    real_ff_min: float       # min real fed funds during episode (FEDFUNDS - CPI YoY)
+    unrate_change: float     # unemployment rate change from episode start to end
+
+
+def identify_inflation_episodes(
+    cpi_yoy: pd.Series | None = None,
+    threshold: float = 4.0,
+    min_duration: int = 3,
+) -> list[InflationEpisode]:
+    """Identify US CPI inflation episodes above `threshold` YoY for >= min_duration months.
+
+    If cpi_yoy is None, loads CPIAUCSL and computes 12-month YoY internally.
+    Ongoing episode (not yet ended) is included if active.
+    """
+    from .data import load_aligned, load_series  # avoid circular at module load
+
+    import numpy as np
+
+    if cpi_yoy is None:
+        raw = load_series("CPIAUCSL").dropna()
+        cpi_yoy = (raw.pct_change(12) * 100).rename("cpi_yoy")
+
+    s = cpi_yoy.dropna().resample("ME").last()
+    above = (s >= threshold).astype(int)
+
+    # Supporting series for driver classification and real rates.
+    try:
+        df_supp = load_aligned(["FEDFUNDS", "UNRATE"], freq="M", how="coarsest", dropna="none")
+    except (FileNotFoundError, KeyError):
+        df_supp = pd.DataFrame()
+
+    flips = above.ne(above.shift()).cumsum()
+    episodes: list[InflationEpisode] = []
+    ep_idx = 0
+
+    for _, run in s.groupby(flips):
+        if above.loc[run.index[0]] == 0:
+            continue
+        if len(run) < min_duration:
+            continue
+
+        start, end = run.index[0], run.index[-1]
+        peak_dt = run.idxmax()
+        peak_val = float(run.max())
+
+        # Driver: demand shock = unemployment fell; supply = unemployment rose.
+        driver = "mixed"
+        unrate_change = float("nan")
+        if not df_supp.empty and "UNRATE" in df_supp.columns:
+            unrate_ep = df_supp["UNRATE"].loc[start:end].dropna()
+            if len(unrate_ep) >= 3:
+                unrate_change = float(unrate_ep.iloc[-1] - unrate_ep.iloc[0])
+                if unrate_change < -0.5:
+                    driver = "demand"
+                elif unrate_change > 0.5:
+                    driver = "supply"
+
+        # Real fed funds minimum during episode.
+        real_ff_min = float("nan")
+        if not df_supp.empty and "FEDFUNDS" in df_supp.columns:
+            ff_ep = df_supp["FEDFUNDS"].loc[start:end].dropna()
+            cpi_ep = s.loc[start:end].dropna()
+            aligned = pd.concat([ff_ep.rename("ff"), cpi_ep.rename("cpi")], axis=1).dropna()
+            if not aligned.empty:
+                real_ff_min = float((aligned["ff"] - aligned["cpi"]).min())
+
+        episodes.append(InflationEpisode(
+            idx=ep_idx,
+            start=start,
+            end=end,
+            peak_date=peak_dt,
+            peak_value=peak_val,
+            duration_months=len(run),
+            driver=driver,
+            real_ff_min=real_ff_min,
+            unrate_change=unrate_change,
+        ))
+        ep_idx += 1
+
+    return episodes
+
+
+def current_inflation_episode(
+    cpi_yoy: pd.Series | None = None,
+    threshold: float = 4.0,
+    min_duration: int = 3,
+) -> InflationEpisode | None:
+    """Return the ongoing inflation episode if one is active (ended within 6 months), else None."""
+    episodes = identify_inflation_episodes(cpi_yoy, threshold=threshold, min_duration=min_duration)
+    if not episodes:
+        return None
+    last = episodes[-1]
+    six_months_ago = pd.Timestamp.now() - pd.DateOffset(months=6)
+    return last if last.end >= six_months_ago else None
+
+
+def inflation_episode_distribution(episodes: list[InflationEpisode]) -> dict:
+    """Cross-sectional summary statistics across a list of inflation episodes."""
+    import numpy as np
+
+    if not episodes:
+        return {}
+
+    def _qs(arr: list[float]) -> dict:
+        s = pd.Series([v for v in arr if not (isinstance(v, float) and (v != v))])
+        if s.empty:
+            return {}
+        return {
+            "median": float(s.median()),
+            "p25": float(s.quantile(0.25)),
+            "p75": float(s.quantile(0.75)),
+            "max": float(s.max()),
+            "n": int(s.size),
+        }
+
+    driver_counts: dict[str, int] = {}
+    for e in episodes:
+        driver_counts[e.driver] = driver_counts.get(e.driver, 0) + 1
+
+    real_ff_vals = [e.real_ff_min for e in episodes if not (e.real_ff_min != e.real_ff_min)]
+
+    return {
+        "n": len(episodes),
+        "duration_months": _qs([e.duration_months for e in episodes]),
+        "peak_value": _qs([e.peak_value for e in episodes]),
+        "unrate_change": _qs([e.unrate_change for e in episodes]),
+        "real_ff_min": _qs(real_ff_vals),
+        "driver_counts": driver_counts,
+    }
+
+
 def compare_to_episodes(
     current_value: float,
     historical: pd.Series,

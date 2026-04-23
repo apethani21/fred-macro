@@ -534,9 +534,12 @@ STRUCTURE — divide the email using the <h3> section headers listed below. Use 
 
 CHART PLACEHOLDERS:
 - Emit {{CHART_1}}, {{CHART_2}}, and optionally {{CHART_3}} as standalone lines in body_html at the specified positions above.
-- {{CHART_1}}: the primary time-series chart (full history with NBER recession shading).
-- {{CHART_2}}: rolling percentile rank over time (for regime/notable-move findings) or rolling correlation (for correlation/lead-lag findings).
-- {{CHART_3}}: distribution histogram (for regime/notable-move) or split cross-correlogram comparing historical vs. recent lead-lag structure (for lead-lag findings). Emit only if there is genuinely a third chart — do not force it.
+- What each chart shows depends on the finding kind (provided in FINDING RECORD below):
+  • correlation_shift / lead_lag_change: {{CHART_1}} = primary series full history; {{CHART_2}} = rolling Spearman correlation over time; {{CHART_3}} = split cross-correlogram (historical vs. recent lag structure).
+  • regime_transition / notable_move_level / notable_move_change: {{CHART_1}} = primary series full history; {{CHART_2}} = rolling percentile rank over time; {{CHART_3}} = full-history distribution histogram with current value marked.
+  • fomc_event_study: {{CHART_1}} = primary series full history; {{CHART_2}} = era comparison bar chart (path vs timing surprise share, or OLS coefficients, by Fed era). This bar chart is the analytical heart — place {{CHART_2}} immediately after the empirical paragraph that explains the era breakdown.
+  • harvested_source / structural_break: {{CHART_1}} = multi-series time plot of all referenced series (z-score normalised if units differ, otherwise raw); {{CHART_2}} = rolling percentile rank of primary series; {{CHART_3}} = full-history distribution histogram.
+- Only emit a placeholder if the chart will genuinely add information not already in the prose. Never emit a placeholder just to fill a slot.
 - Place each placeholder immediately after the paragraph it illustrates. Never place two placeholders in the same paragraph block.
 - Do not write "the chart above/below" — let the chart speak.
 
@@ -828,7 +831,8 @@ def fact_check_draft(draft: dict, pick: LessonPick, ctx: dict[str, SeriesSnapsho
 # ---------- chart generation ----------
 
 _CHART_KINDS = {"correlation_shift", "regime_transition", "notable_move_level",
-                "notable_move_change", "lead_lag_change", "cointegration_break"}
+                "notable_move_change", "lead_lag_change", "cointegration_break",
+                "harvested_source", "fomc_event_study", "structural_break"}
 
 
 def generate_charts(pick: LessonPick, ctx: dict[str, SeriesSnapshot], today: date) -> list[Path]:
@@ -998,7 +1002,8 @@ def generate_charts(pick: LessonPick, ctx: dict[str, SeriesSnapshot], today: dat
         except Exception as e:
             logger.warning("Chart 3 (split correlogram) skipped: %s", e)
 
-    elif finding.kind in {"notable_move_level", "notable_move_change", "regime_transition"} and sid1 in ctx:
+    elif finding.kind in {"notable_move_level", "notable_move_change", "regime_transition",
+                          "structural_break"} and sid1 in ctx:
         # Distribution histogram as chart 3 (percentile rank over time was chart 2)
         snap = ctx[sid1]
         if snap.current_value is not None:
@@ -1021,6 +1026,150 @@ def generate_charts(pick: LessonPick, ctx: dict[str, SeriesSnapshot], today: dat
                 logger.info("Chart 3 (distribution) saved: %s", out3)
             except Exception as e:
                 logger.warning("Chart 3 (distribution) failed: %s", e)
+
+    # ── harvested_source: replace the single-series chart 1 with a multi-series
+    #    chart if the finding references 2+ series, then add rolling percentile
+    #    and distribution as charts 2 and 3 ───────────────────────────────────
+    if finding.kind == "harvested_source" and len(finding.series_ids) >= 2:
+        # Attempt a multi-series chart using all tracked series in the finding.
+        # Fall back to the already-generated single-series chart 1 if this fails.
+        sids_all = list(finding.series_ids)
+        try:
+            from src.analytics.data import load_aligned
+            from src.analytics.charts import multi_series, multi_series_zoom, _span_years
+            df_multi = load_aligned(sids_all)
+            df_multi = df_multi.dropna(how="all")
+            if df_multi.empty or len(df_multi.columns) < 2:
+                raise ValueError("Insufficient aligned data for multi-series chart")
+            # Determine whether to normalise: compare units of tracked series
+            units_set = {series_metadata(sid).get("units", "") for sid in df_multi.columns}
+            normalize = "none" if len(units_set) == 1 else "zscore"
+            legend_labels = [series_metadata(sid).get("title", sid) for sid in df_multi.columns]
+            span = _span_years(df_multi.dropna(how="all").index)
+            primary_title = series_metadata(sids_all[0]).get("title", sids_all[0])
+            multi_title = f"{primary_title} and Related Series"
+            units_label = list(units_set)[0] if len(units_set) == 1 else "z-score"
+            if span >= _ZOOM_MIN_SPAN_YEARS:
+                fig_m, _ = multi_series_zoom(
+                    df_multi, title=multi_title, ylabel=units_label,
+                    normalize=normalize, legend_labels=legend_labels, shade_nber=True,
+                )
+            else:
+                fig_m, _ = multi_series(
+                    df_multi, title=multi_title, ylabel=units_label,
+                    normalize=normalize, legend_labels=legend_labels, shade_nber=True,
+                )
+            add_source_footer(fig_m, list(df_multi.columns), today)
+            # Replace chart 1 if it was single-series; otherwise append
+            out_m = chart_dir / f"{today.isoformat()}_{slug_short}_chart1m.png"
+            save_to(fig_m, out_m)
+            plt.close(fig_m)
+            if paths:
+                paths[0] = out_m  # replace single-series chart 1
+            else:
+                paths.append(out_m)
+            logger.info("Chart 1 (multi-series harvested) saved: %s", out_m)
+        except Exception as e:
+            logger.warning("Chart 1 multi-series (harvested) skipped: %s", e)
+
+    if finding.kind in {"harvested_source", "structural_break"}:
+        # Chart 2: rolling percentile of primary series
+        if len(paths) < 2:
+            try:
+                s = load_series(sid1)
+                meta = series_metadata(sid1)
+                freq = meta.get("frequency_short", "M")
+                obs_per_year = {"D": 252, "W": 52, "M": 12, "Q": 4, "A": 1}.get(freq, 252)
+                window = obs_per_year * 2
+                fig2h, _ = rolling_percentile(
+                    s,
+                    window=window,
+                    title=f"{meta.get('title', sid1)} — Rolling Percentile Rank",
+                    subtitle="2-year rolling window; bands at 33rd and 67th %ile",
+                    shade_nber=True,
+                )
+                add_source_footer(fig2h, [sid1], today)
+                out2h = chart_dir / f"{today.isoformat()}_{slug_short}_chart2.png"
+                save_to(fig2h, out2h)
+                plt.close(fig2h)
+                paths.append(out2h)
+                logger.info("Chart 2 (rolling percentile harvested) saved: %s", out2h)
+            except Exception as e:
+                logger.warning("Chart 2 (rolling percentile harvested) skipped: %s", e)
+
+        # Chart 3: distribution of primary series
+        if len(paths) < 3 and sid1 in ctx:
+            snap = ctx[sid1]
+            if snap.current_value is not None:
+                try:
+                    s = load_series(sid1)
+                    meta = series_metadata(sid1)
+                    pct_label = f"{snap.percentile_rank * 100:.0f}th %ile" if snap.percentile_rank is not None else ""
+                    fig3h, _ = distribution(
+                        s,
+                        current_value=snap.current_value,
+                        title=f"{meta.get('title', sid1)} — Full History Distribution",
+                        subtitle=f"Current: {snap.current_value:.2f}{' — ' + pct_label if pct_label else ''}",
+                        xlabel=str(meta.get("units", "")),
+                    )
+                    add_source_footer(fig3h, [sid1], today)
+                    out3h = chart_dir / f"{today.isoformat()}_{slug_short}_chart3.png"
+                    save_to(fig3h, out3h)
+                    plt.close(fig3h)
+                    paths.append(out3h)
+                    logger.info("Chart 3 (distribution harvested) saved: %s", out3h)
+                except Exception as e:
+                    logger.warning("Chart 3 (distribution harvested) skipped: %s", e)
+
+    # ── fomc_event_study: add era comparison bar chart as chart 2 ─────────────
+    if finding.kind == "fomc_event_study":
+        ev = finding.evidence or {}
+        eras = ev.get("eras") if isinstance(ev, dict) else None
+        if eras and len(eras) >= 2:
+            try:
+                from src.analytics.charts import era_comparison_bar
+                # Detect which metrics to compare
+                first = eras[0]
+                if "path_share" in first:
+                    # Stacked bar: timing share vs path share per era
+                    # Compute timing_share = 1 - path_share and store temporarily
+                    for e in eras:
+                        e["timing_share"] = 1.0 - float(e["path_share"])
+                    fig_era, _ = era_comparison_bar(
+                        eras,
+                        metric_a="timing_share",
+                        metric_b="path_share",
+                        label_a="Timing surprise share",
+                        label_b="Path surprise share",
+                        title="FOMC Announcement: Path vs Timing Surprise Share by Era",
+                        subtitle="Share of total 2-year yield move attributable to each component",
+                        ylabel="Share of total move (%)",
+                        stacked=True,
+                        pct_scale=True,
+                    )
+                elif "beta_path" in first:
+                    fig_era, _ = era_comparison_bar(
+                        eras,
+                        metric_a="beta_timing",
+                        metric_b="beta_path",
+                        label_a="β timing",
+                        label_b="β path",
+                        title="FOMC Day: 10-Year Yield Sensitivity to Surprise Components by Era",
+                        subtitle="OLS coefficients — 10y change on timing and path surprises",
+                        ylabel="OLS coefficient",
+                        stacked=False,
+                        pct_scale=False,
+                    )
+                else:
+                    raise ValueError("No known metric found in era evidence")
+                add_source_footer(fig_era, list(finding.series_ids), today)
+                out_era = chart_dir / f"{today.isoformat()}_{slug_short}_chart2.png"
+                save_to(fig_era, out_era)
+                plt.close(fig_era)
+                paths.append(out_era)
+                logger.info("Chart 2 (era comparison) saved: %s", out_era)
+            except Exception as e:
+                logger.warning("Chart 2 (era comparison fomc) skipped: %s", e)
 
     return paths
 

@@ -546,6 +546,72 @@ def multi_series_zoom(
     return fig, (ax_left, ax_right)
 
 
+def era_comparison_bar(
+    eras: list[dict],
+    metric_a: str,
+    metric_b: str,
+    label_a: str,
+    label_b: str,
+    title: str,
+    subtitle: str | None = None,
+    ylabel: str = "",
+    stacked: bool = False,
+    pct_scale: bool = False,
+) -> tuple[Figure, Axes]:
+    """Grouped or stacked bar chart comparing two metrics across named eras.
+
+    `eras` is a list of dicts with at least 'era', metric_a, and metric_b keys.
+    `pct_scale` multiplies values by 100 (for fractions displayed as %).
+    """
+    apply_style()
+
+    def _fmt_era(e: dict) -> str:
+        label = e.get("era", "?")
+        start = e.get("era_start", "")
+        end = e.get("era_end", "")
+        y0 = start[:4] if start else ""
+        y1 = end[:4] if end else ""
+        readable = {
+            "pre_gfc": "Pre-GFC",
+            "gfc_zlb": "GFC/ZLB",
+            "post_taper": "Post-Taper",
+            "post_taper_pre_covid": "Post-Taper",
+            "covid_zlb": "COVID ZLB",
+            "hiking_2022": "2022 Hike",
+            "current": "Current",
+        }.get(label, label.replace("_", " ").title())
+        if y0 and y1:
+            return f"{readable}\n{y0}–{y1}"
+        return readable
+
+    era_labels = [_fmt_era(e) for e in eras]
+    vals_a = [float(e.get(metric_a, 0)) * (100 if pct_scale else 1) for e in eras]
+    vals_b = [float(e.get(metric_b, 0)) * (100 if pct_scale else 1) for e in eras]
+    x = np.arange(len(era_labels))
+
+    fig, ax = plt.subplots(figsize=FIGSIZE_TIME_SERIES)
+
+    if stacked:
+        ax.bar(x, vals_a, label=label_a, color=PALETTE[0], alpha=0.85, edgecolor="white")
+        ax.bar(x, vals_b, bottom=vals_a, label=label_b, color=PALETTE[1], alpha=0.85, edgecolor="white")
+        for i, (a, b) in enumerate(zip(vals_a, vals_b)):
+            total = a + b
+            if total > 0:
+                ax.text(x[i], total + 0.5, f"{b / total * 100:.0f}%", ha="center", fontsize=8, color="#374151")
+    else:
+        width = 0.38
+        ax.bar(x - width / 2, vals_a, width, label=label_a, color=PALETTE[0], alpha=0.85, edgecolor="white")
+        ax.bar(x + width / 2, vals_b, width, label=label_b, color=PALETTE[3], alpha=0.85, edgecolor="white")
+
+    ax.set_xticks(x)
+    ax.set_xticklabels(era_labels, fontsize=9)
+    ax.set_ylabel(ylabel)
+    ax.legend(loc="best", frameon=False, fontsize=9)
+    _set_titles(ax, title, subtitle)
+    plt.tight_layout()
+    return fig, ax
+
+
 # ---------- convenience ----------
 
 def save_to(fig: Figure, path: str | Path, *, create_dirs: bool = True) -> Path:

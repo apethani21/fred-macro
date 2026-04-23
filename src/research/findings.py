@@ -30,6 +30,12 @@ STATS_FILES = {
     "lead_lag": STATS_DIR / "lead_lag.parquet",
     "regime_labels": STATS_DIR / "regime_labels.parquet",
     "structural_breaks": STATS_DIR / "structural_breaks.parquet",
+    # M1: inflation episode cross-sectional analysis
+    "inflation_episodes": STATS_DIR / "inflation_episodes.parquet",
+    # M8: breakeven decomposition
+    "breakeven_components": STATS_DIR / "breakeven_components.parquet",
+    # M3: bond return predictability / CP factor
+    "bond_predictability": STATS_DIR / "bond_predictability.parquet",
 }
 
 
@@ -307,6 +313,9 @@ def append_stats(name: str, rows: pd.DataFrame) -> Path:
         "lead_lag": ["series_a", "series_b", "window", "lag"],
         "regime_labels": ["series_id", "date"],
         "structural_breaks": ["series_id", "series_b", "kind", "run_date"],
+        "inflation_episodes": ["episode_idx", "run_date"],
+        "breakeven_components": ["date", "tenor"],
+        "bond_predictability": ["date", "run_date"],
     }[name]
     combined = combined.drop_duplicates(subset=dedup_keys, keep="last").reset_index(drop=True)
     save_parquet_atomic(combined, path)

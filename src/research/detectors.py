@@ -471,3 +471,187 @@ def detect_cointegration_break(
         },
         score=float(recent.p_value - full.p_value),
     )]
+
+
+# -------------------------------------------------------------------------
+# M1: Inflation episode — current episode is anomalous vs historical distribution.
+# -------------------------------------------------------------------------
+
+def detect_inflation_episode_anomaly(
+    episodes: list,
+    current,
+    duration_threshold_pct: float = 0.75,
+    peak_threshold_pct: float = 0.75,
+) -> list[DetectorHit]:
+    """Fire when the current inflation episode is a distributional outlier.
+
+    Checks: (1) duration relative to historical episodes; (2) peak level.
+    Requires ≥ 4 historical episodes for the distribution to be meaningful.
+    `episodes` is list[InflationEpisode]; `current` is InflationEpisode | None.
+    """
+    if current is None:
+        return []
+    historical = [e for e in episodes if e.idx != current.idx]
+    if len(historical) < 4:
+        return []
+
+    hits: list[DetectorHit] = []
+
+    hist_durations = pd.Series([e.duration_months for e in historical], dtype=float)
+    hist_peaks = pd.Series([e.peak_value for e in historical], dtype=float)
+
+    for check, curr_val, hist_s, threshold_pct, tag in [
+        ("duration", current.duration_months, hist_durations, duration_threshold_pct, "duration-extreme"),
+        ("peak_value", current.peak_value, hist_peaks, peak_threshold_pct, "peak-extreme"),
+    ]:
+        p_thresh = float(hist_s.quantile(threshold_pct))
+        if curr_val < p_thresh:
+            continue
+        pct_rank = float((hist_s < curr_val).mean())
+        hits.append(DetectorHit(
+            kind="inflation_episode_anomaly",
+            series_ids=("CPIAUCSL",),
+            window=f"{current.start.strftime('%Y-%m')} to {current.end.strftime('%Y-%m')}",
+            evidence={
+                "check": check,
+                "current_value": float(curr_val),
+                "percentile_rank": pct_rank,
+                "hist_p25": float(hist_s.quantile(0.25)),
+                "hist_median": float(hist_s.median()),
+                "hist_p75": float(hist_s.quantile(0.75)),
+                "hist_p90": float(hist_s.quantile(0.90)),
+                "hist_max": float(hist_s.max()),
+                "n_historical": len(historical),
+                "current_episode_start": current.start.isoformat(),
+                "current_episode_end": current.end.isoformat(),
+                "current_driver": current.driver,
+                "current_duration_months": current.duration_months,
+                "current_peak_value": current.peak_value,
+                "current_peak_date": current.peak_date.isoformat(),
+                "current_real_ff_min": current.real_ff_min,
+                "current_unrate_change": current.unrate_change,
+            },
+            score=pct_rank,
+            tags=("inflation-episode", tag),
+        ))
+
+    return hits
+
+
+# -------------------------------------------------------------------------
+# M8: Breakeven anomaly — inflation risk premium proxy at extreme.
+# -------------------------------------------------------------------------
+
+def detect_breakeven_anomaly(
+    decomp_df: pd.DataFrame,
+    tenor: str = "10y",
+    z_threshold: float = 2.0,
+    min_history: int = 60,
+) -> list[DetectorHit]:
+    """Fire when the inflation risk premium proxy is at an extreme z-score.
+
+    `decomp_df` is the output of `indicators.breakeven_decomposition()`.
+    The risk_premium_proxy column is breakeven − survey_expectation, which
+    conflates the pure risk premium and TIPS liquidity premium.
+    """
+    col = "risk_premium_proxy"
+    if col not in decomp_df.columns:
+        return []
+    rp = decomp_df[col].dropna()
+    if len(rp) < min_history:
+        return []
+
+    z = float(S.zscore_vs_history(rp, robust=True))
+    if abs(z) < z_threshold:
+        return []
+
+    pct = float(S.percentile_rank(rp))
+    latest_val = float(rp.iloc[-1])
+    latest_date = rp.index[-1]
+
+    be = decomp_df["breakeven"].dropna()
+    survey = decomp_df["survey_expectation"].dropna()
+    fwd = decomp_df.get("five_y_five_y", pd.Series(dtype=float)).dropna()
+
+    direction = "elevated" if z > 0 else "compressed"
+    score = abs(z)
+
+    return [DetectorHit(
+        kind="breakeven_anomaly",
+        series_ids=("T10YIE", "MICH") if tenor == "10y" else ("T5YIE", "MICH"),
+        window=f"{tenor} breakeven decomposition, robust z vs {len(rp)} months",
+        evidence={
+            "tenor": tenor,
+            "latest_date": str(latest_date.date()),
+            "risk_premium_proxy": round(latest_val, 4),
+            "robust_z": round(z, 3),
+            "percentile_rank": round(pct, 4),
+            "direction": direction,
+            "hist_median": round(float(rp.median()), 4),
+            "hist_p10": round(float(rp.quantile(0.10)), 4),
+            "hist_p90": round(float(rp.quantile(0.90)), 4),
+            "latest_breakeven": round(float(be.iloc[-1]), 4) if not be.empty else float("nan"),
+            "latest_survey_expectation": round(float(survey.iloc[-1]), 4) if not survey.empty else float("nan"),
+            "latest_five_y_five_y": round(float(fwd.iloc[-1]), 4) if not fwd.empty else float("nan"),
+            "n_months": len(rp),
+            "note": "risk_premium_proxy conflates inflation risk premium and TIPS liquidity premium",
+        },
+        score=score,
+        tags=("breakeven", "risk-premium", direction),
+    )]
+
+
+# -------------------------------------------------------------------------
+# M3: CP factor signal — bond risk premium at extreme z-score.
+# -------------------------------------------------------------------------
+
+def detect_cp_factor_signal(
+    cp: pd.Series,
+    reg_results: list,
+    z_threshold: float = 1.75,
+    min_history: int = 60,
+) -> list[DetectorHit]:
+    """Fire when the Cochrane-Piazzesi factor is at an extreme z-score.
+
+    `cp` is the output of `bonds.cp_factor()`.
+    `reg_results` is the output of `bonds.cp_regression()`, used to report R².
+    High CP factor = elevated bond risk premium (historically → high future excess returns).
+    """
+    clean = cp.dropna()
+    if len(clean) < min_history:
+        return []
+
+    z = float(S.zscore_vs_history(clean, robust=True))
+    if abs(z) < z_threshold:
+        return []
+
+    pct = float(S.percentile_rank(clean))
+    latest_val = float(clean.iloc[-1])
+    latest_date = clean.index[-1]
+    direction = "elevated" if z > 0 else "compressed"
+
+    r2_by_maturity: dict[int, float] = {r.maturity: round(r.r_squared, 3) for r in reg_results}
+
+    return [DetectorHit(
+        kind="cp_factor_signal",
+        series_ids=("DGS1", "DGS2", "DGS3", "DGS5", "DGS7", "DGS10"),
+        window=f"CP factor (first PC forward rates), robust z vs {len(clean)} months",
+        evidence={
+            "latest_date": str(latest_date.date()),
+            "cp_value": round(latest_val, 4),
+            "robust_z": round(z, 3),
+            "percentile_rank": round(pct, 4),
+            "direction": direction,
+            "hist_median": round(float(clean.median()), 4),
+            "hist_p10": round(float(clean.quantile(0.10)), 4),
+            "hist_p90": round(float(clean.quantile(0.90)), 4),
+            "n_months": len(clean),
+            "r2_by_maturity": r2_by_maturity,
+            "interpretation": (
+                "CP factor = first PC of Treasury forward rate curve (proxy for bond risk premium). "
+                "Cochrane-Piazzesi (2005): high factor predicts high 1-year excess bond returns."
+            ),
+        },
+        score=abs(z),
+        tags=("bond-risk-premium", "cp-factor", direction),
+    )]

@@ -22,8 +22,11 @@ from src.analytics import stats as S
 from .config import CORE_PAIRS, NOTABLE_MOVE_WATCHLIST
 from .detectors import (
     DetectorHit,
+    detect_breakeven_anomaly,
     detect_cointegration_break,
     detect_correlation_shift,
+    detect_cp_factor_signal,
+    detect_inflation_episode_anomaly,
     detect_lead_lag_change,
     detect_notable_move,
     detect_regime_transition,
@@ -375,6 +378,196 @@ def scan_structural_breaks_corr(
 
 
 # -------------------------------------------------------------------------
+# M1: Inflation episode cross-sectional analysis
+# -------------------------------------------------------------------------
+
+def scan_inflation_episodes(
+    threshold: float = 4.0,
+    min_duration: int = 3,
+) -> tuple[list[DetectorHit], pd.DataFrame, list[tuple[str, str]]]:
+    """Identify historical inflation episodes, compare current to distribution."""
+    from src.analytics.episodes import (
+        identify_inflation_episodes,
+        current_inflation_episode,
+        inflation_episode_distribution,
+    )
+
+    hits: list[DetectorHit] = []
+    skipped: list[tuple[str, str]] = []
+    rows: list[dict] = []
+
+    try:
+        from src.analytics.data import load_series
+        raw = load_series("CPIAUCSL").dropna()
+        cpi_yoy = (raw.pct_change(12) * 100).rename("cpi_yoy")
+    except (FileNotFoundError, KeyError) as e:
+        skipped.append(("CPIAUCSL", f"load: {e}"))
+        return hits, pd.DataFrame(), skipped
+
+    try:
+        episodes = identify_inflation_episodes(cpi_yoy, threshold=threshold, min_duration=min_duration)
+        current = current_inflation_episode(cpi_yoy, threshold=threshold, min_duration=min_duration)
+    except Exception as e:
+        skipped.append(("inflation_episodes", f"compute: {e}"))
+        return hits, pd.DataFrame(), skipped
+
+    # Persist one row per episode to parquet.
+    for ep in episodes:
+        rows.append({
+            "episode_idx": ep.idx,
+            "start": ep.start.isoformat(),
+            "end": ep.end.isoformat(),
+            "peak_date": ep.peak_date.isoformat(),
+            "peak_value": ep.peak_value,
+            "duration_months": ep.duration_months,
+            "driver": ep.driver,
+            "real_ff_min": ep.real_ff_min,
+            "unrate_change": ep.unrate_change,
+            "run_date": date.today().isoformat(),
+        })
+
+    found = detect_inflation_episode_anomaly(episodes, current)
+    hits.extend(found)
+
+    stats_df = pd.DataFrame(rows) if rows else pd.DataFrame(columns=[
+        "episode_idx", "start", "end", "peak_date", "peak_value",
+        "duration_months", "driver", "real_ff_min", "unrate_change", "run_date",
+    ])
+    return hits, stats_df, skipped
+
+
+# -------------------------------------------------------------------------
+# M8: Breakeven decomposition
+# -------------------------------------------------------------------------
+
+def scan_breakeven_decomposition(
+    tenor: str = "10y",
+) -> tuple[list[DetectorHit], pd.DataFrame, list[tuple[str, str]]]:
+    """Decompose TIPS breakeven into expected inflation and risk premium proxy."""
+    from src.analytics.indicators import breakeven_decomposition
+    from src.analytics.stats import zscore_vs_history, percentile_rank
+
+    hits: list[DetectorHit] = []
+    skipped: list[tuple[str, str]] = []
+
+    try:
+        df = breakeven_decomposition(tenor=tenor)
+    except (FileNotFoundError, KeyError) as e:
+        skipped.append((f"breakeven_{tenor}", f"load: {e}"))
+        return hits, pd.DataFrame(), skipped
+    except Exception as e:
+        skipped.append((f"breakeven_{tenor}", f"compute: {e}"))
+        return hits, pd.DataFrame(), skipped
+
+    if df.empty or len(df) < 24:
+        skipped.append((f"breakeven_{tenor}", f"insufficient data ({len(df)} rows)"))
+        return hits, pd.DataFrame(), skipped
+
+    found = detect_breakeven_anomaly(df, tenor=tenor)
+    hits.extend(found)
+
+    # Persist decomposition with z-scores for the parquet record.
+    rp = df["risk_premium_proxy"].dropna()
+    z_series = rp.expanding(min_periods=24).apply(
+        lambda x: float((x.iloc[-1] - x.median()) / max((x - x.median()).abs().median() * 1.4826, 1e-9)),
+        raw=False,
+    )
+    pct_series = rp.expanding(min_periods=24).apply(
+        lambda x: float((x < x.iloc[-1]).mean()), raw=False
+    )
+
+    rows_df = df.copy()
+    rows_df["risk_premium_z"] = z_series
+    rows_df["risk_premium_pct_rank"] = pct_series
+    rows_df["tenor"] = tenor
+    rows_df["run_date"] = date.today().isoformat()
+    rows_df = rows_df.reset_index().rename(columns={"index": "date"})
+    # Thin to one row per month (already monthly, just ensure it)
+    rows_df = rows_df.tail(120)   # last 10 years is enough for audit trail
+
+    return hits, rows_df, skipped
+
+
+# -------------------------------------------------------------------------
+# M3: Bond return predictability / CP factor
+# -------------------------------------------------------------------------
+
+def scan_bond_predictability() -> tuple[list[DetectorHit], pd.DataFrame, list[tuple[str, str]]]:
+    """Compute CP factor and excess returns; fire when CP factor is at extreme."""
+    from src.analytics.bonds import (
+        par_yields,
+        forward_rates,
+        cp_factor as compute_cp,
+        approximate_excess_returns,
+        cp_regression,
+        cp_factor_snapshot,
+    )
+
+    hits: list[DetectorHit] = []
+    skipped: list[tuple[str, str]] = []
+
+    try:
+        yields = par_yields(freq="M")
+    except Exception as e:
+        skipped.append(("bond_yields", f"load: {e}"))
+        return hits, pd.DataFrame(), skipped
+
+    if yields.empty or yields.shape[0] < 60 or yields.shape[1] < 3:
+        skipped.append(("bond_yields", f"insufficient data ({yields.shape})"))
+        return hits, pd.DataFrame(), skipped
+
+    try:
+        fwds = forward_rates(yields)
+        cp = compute_cp(forward_df=fwds)
+    except Exception as e:
+        skipped.append(("cp_factor", f"compute: {e}"))
+        return hits, pd.DataFrame(), skipped
+
+    if cp.empty or len(cp) < 60:
+        skipped.append(("cp_factor", f"insufficient history ({len(cp)} months)"))
+        return hits, pd.DataFrame(), skipped
+
+    # Excess returns and regression (best-effort; may have NaNs at tail).
+    try:
+        rx = approximate_excess_returns(yields, risk_free_col=1, horizon_months=12)
+        reg_results = cp_regression(rx, cp, hac_lags=12)
+    except Exception:
+        rx = pd.DataFrame()
+        reg_results = []
+
+    found = detect_cp_factor_signal(cp, reg_results)
+    hits.extend(found)
+
+    # Persist CP factor time series with z-scores.
+    clean = cp.dropna()
+    z_expanding = clean.expanding(min_periods=24).apply(
+        lambda x: float((x.iloc[-1] - x.median()) / max((x - x.median()).abs().median() * 1.4826, 1e-9)),
+        raw=False,
+    )
+    pct_expanding = clean.expanding(min_periods=24).apply(
+        lambda x: float((x < x.iloc[-1]).mean()), raw=False
+    )
+
+    rows: list[dict] = []
+    snap = cp_factor_snapshot(cp, reg_results)
+    for dt, val in clean.tail(120).items():
+        rows.append({
+            "date": dt.date().isoformat(),
+            "cp_factor": round(float(val), 6),
+            "cp_factor_z": round(float(z_expanding.get(dt, float("nan"))), 4),
+            "cp_factor_pct_rank": round(float(pct_expanding.get(dt, float("nan"))), 4),
+            "r2_5y": round(snap.r2_5y, 4) if snap and not (snap.r2_5y != snap.r2_5y) else float("nan"),
+            "r2_10y": round(snap.r2_10y, 4) if snap and not (snap.r2_10y != snap.r2_10y) else float("nan"),
+            "run_date": date.today().isoformat(),
+        })
+
+    stats_df = pd.DataFrame(rows) if rows else pd.DataFrame(columns=[
+        "date", "cp_factor", "cp_factor_z", "cp_factor_pct_rank", "r2_5y", "r2_10y", "run_date",
+    ])
+    return hits, stats_df, skipped
+
+
+# -------------------------------------------------------------------------
 # Hit → Finding conversion
 # -------------------------------------------------------------------------
 
@@ -508,6 +701,82 @@ def _finding_from_hit(hit: DetectorHit, today: date) -> Finding:
             f"it is {ev['recent_p']:.3f} (cannot reject). The equilibrium relationship appears to "
             f"have weakened or broken."
         )
+    elif hit.kind == "inflation_episode_anomaly":
+        check = ev["check"]
+        ep_start = ev["current_episode_start"][:7]
+        driver = ev["current_driver"]
+        if check == "duration":
+            curr = int(ev["current_value"])
+            title = (
+                f"Current inflation episode ({ep_start}–, {driver}) duration "
+                f"of {curr}m is at {ev['percentile_rank']:.0%} of historical distribution"
+            )
+            slug = make_slug("inflation_episode_duration", ("CPIAUCSL",))
+            claim = (
+                f"The current CPI inflation episode beginning {ep_start} has lasted {curr} months "
+                f"(driver: {driver}), placing it at the {ev['percentile_rank']:.0%} percentile of "
+                f"{ev['n_historical']} historical episodes since 1950 "
+                f"(median {ev['hist_median']:.0f}m, 75th pct {ev['hist_p75']:.0f}m, max {ev['hist_max']:.0f}m). "
+                f"Real fed funds minimum during episode: {ev['current_real_ff_min']:.2f}pp. "
+                f"Unemployment change: {ev['current_unrate_change']:+.2f}pp."
+            )
+        else:
+            curr_peak = ev["current_peak_value"]
+            peak_dt = ev["current_peak_date"][:7]
+            title = (
+                f"Current inflation episode peaked at {curr_peak:.1f}% YoY ({peak_dt}), "
+                f"{ev['percentile_rank']:.0%} of historical distribution"
+            )
+            slug = make_slug("inflation_episode_peak", ("CPIAUCSL",))
+            claim = (
+                f"CPI YoY peaked at {curr_peak:.2f}% in {peak_dt} in the current episode "
+                f"(driver: {driver}), ranking at the {ev['percentile_rank']:.0%} percentile "
+                f"of {ev['n_historical']} historical episodes "
+                f"(median peak {ev['hist_median']:.1f}%, 75th pct {ev['hist_p75']:.1f}%, "
+                f"max {ev['hist_max']:.1f}%). Episode duration: {ev['current_duration_months']} months."
+            )
+    elif hit.kind == "breakeven_anomaly":
+        tenor = ev["tenor"]
+        rp = ev["risk_premium_proxy"]
+        direction = ev["direction"]
+        z = ev["robust_z"]
+        title = (
+            f"{tenor} inflation risk premium proxy {direction} at {rp:.2f}pp "
+            f"(robust z = {z:+.2f})"
+        )
+        slug = make_slug("breakeven_anomaly", hit.series_ids, extra=tenor)
+        claim = (
+            f"The {tenor} breakeven inflation risk premium proxy (T10YIE minus Michigan 1y survey "
+            f"expectation) stands at {rp:.2f}pp as of {ev['latest_date']}, "
+            f"a robust z-score of {z:+.2f} vs {ev['n_months']} months of history "
+            f"(historical median {ev['hist_median']:.2f}pp, p10 {ev['hist_p10']:.2f}pp, "
+            f"p90 {ev['hist_p90']:.2f}pp). "
+            f"The 5y5y forward breakeven stands at {ev['latest_five_y_five_y']:.2f}pp "
+            f"(medium-term expectations anchor). "
+            f"Note: the proxy conflates the pure inflation risk premium and TIPS liquidity premium."
+        )
+    elif hit.kind == "cp_factor_signal":
+        direction = ev["direction"]
+        z = ev["robust_z"]
+        cp_val = ev["cp_value"]
+        r2_5y = ev["r2_by_maturity"].get(5, float("nan"))
+        r2_10y = ev["r2_by_maturity"].get(10, float("nan"))
+        title = (
+            f"Cochrane-Piazzesi bond risk premium factor {direction} "
+            f"(robust z = {z:+.2f}, {ev['percentile_rank']:.0%} pctile)"
+        )
+        slug = make_slug("cp_factor_signal", hit.series_ids)
+        r2_str = ""
+        if r2_5y == r2_5y:  # not nan
+            r2_str = f" Predictive R² (CP factor on 1y excess returns): 5y {r2_5y:.1%}, 10y {r2_10y:.1%}."
+        claim = (
+            f"The Cochrane-Piazzesi factor — first principal component of the Treasury forward rate "
+            f"curve (DGS1–DGS10) — stands at {cp_val:.3f} as of {ev['latest_date']}, "
+            f"a robust z-score of {z:+.2f} vs {ev['n_months']} months of history "
+            f"(p10 {ev['hist_p10']:.3f}, median {ev['hist_median']:.3f}, p90 {ev['hist_p90']:.3f}). "
+            f"High CP factor historically predicts high 1-year excess Treasury returns "
+            f"(Cochrane & Piazzesi 2005, AER 95(1)).{r2_str}"
+        )
     else:
         title = f"Unknown hit kind: {hit.kind}"
         slug = make_slug(hit.kind, hit.series_ids)
@@ -577,6 +846,21 @@ def run_scan(
     if len(sbcdf):
         append_stats("structural_breaks", sbcdf)
     report.stats_rows_written["structural_breaks_corr"] = len(sbcdf)
+
+    log.info("scan: inflation episodes (M1)")
+    ieh, iedf, iesk = scan_inflation_episodes()
+    report.hits.extend(ieh); report.skipped.extend(iesk)
+    append_stats("inflation_episodes", iedf); report.stats_rows_written["inflation_episodes"] = len(iedf)
+
+    log.info("scan: breakeven decomposition (M8)")
+    bdh, bddf, bdsk = scan_breakeven_decomposition()
+    report.hits.extend(bdh); report.skipped.extend(bdsk)
+    append_stats("breakeven_components", bddf); report.stats_rows_written["breakeven_components"] = len(bddf)
+
+    log.info("scan: bond predictability / CP factor (M3)")
+    bph, bpdf, bpsk = scan_bond_predictability()
+    report.hits.extend(bph); report.skipped.extend(bpsk)
+    append_stats("bond_predictability", bpdf); report.stats_rows_written["bond_predictability"] = len(bpdf)
 
     # Turn hits into findings and write markdown.
     prior = existing_slugs()

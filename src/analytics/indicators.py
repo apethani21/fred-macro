@@ -154,6 +154,46 @@ def taylor_rule(
     return out
 
 
+# ---- M8: Breakeven Decomposition ----
+
+def breakeven_decomposition(
+    tenor: Literal["5y", "10y"] = "10y",
+) -> pd.DataFrame:
+    """Decompose TIPS breakeven into survey-implied expected inflation and risk premium proxy.
+
+    Simplified two-component split:
+      breakeven = survey_expectation + risk_premium_proxy
+
+    The risk_premium_proxy conflates the true inflation risk premium and the TIPS
+    liquidity premium (not separately identified without OAS data). This is noted
+    explicitly — interpret as an upper bound on the pure risk premium.
+
+    Uses MICH (Michigan Consumer 1y inflation expectation) as the survey anchor.
+    For the 10y tenor, also returns T5YIFR (5y5y forward breakeven) which isolates
+    medium-term expectations from near-term noise.
+
+    Returns a monthly DataFrame (aligned to coarsest frequency).
+    """
+    if tenor == "10y":
+        be_id, fwd_id = "T10YIE", "T5YIFR"
+    elif tenor == "5y":
+        be_id, fwd_id = "T5YIE", None
+    else:
+        raise ValueError(f"Unknown tenor {tenor!r}")
+
+    ids = [be_id, "MICH"] + ([fwd_id] if fwd_id else [])
+    df = load_aligned(ids, freq="M", how="coarsest", agg="last", dropna="none")
+    df = df.rename(columns={be_id: "breakeven", "MICH": "survey_expectation"})
+    df["risk_premium_proxy"] = df["breakeven"] - df["survey_expectation"]
+
+    cols = ["breakeven", "survey_expectation", "risk_premium_proxy"]
+    if fwd_id and fwd_id in df.columns:
+        df = df.rename(columns={fwd_id: "five_y_five_y"})
+        cols.append("five_y_five_y")
+
+    return df[cols].dropna(subset=["breakeven", "survey_expectation"])
+
+
 def taylor_rule_from_fred(
     neutral_real: float = 0.5,
     inflation_target: float = 2.0,
