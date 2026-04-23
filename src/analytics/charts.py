@@ -612,6 +612,33 @@ def era_comparison_bar(
     return fig, ax
 
 
+# ---------- equation rendering ----------
+
+def render_equation_image(latex_str: str, *, fontsize: int = 16, dpi: int = 150) -> bytes:
+    """Render a LaTeX math expression to PNG bytes using matplotlib mathtext.
+
+    No system LaTeX required — uses matplotlib's built-in mathtext parser.
+    Wrap the caller's string in $...$ internally; do NOT include $ in latex_str.
+    """
+    import io
+    fig = plt.figure(figsize=(8, 0.7))
+    fig.patch.set_facecolor("white")
+    fig.text(
+        0.5, 0.5,
+        f"${latex_str}$",
+        fontsize=fontsize,
+        ha="center",
+        va="center",
+        color="#1a1a1a",
+        fontfamily="DejaVu Sans",
+    )
+    buf = io.BytesIO()
+    fig.savefig(buf, format="png", dpi=dpi, bbox_inches="tight", facecolor="white")
+    plt.close(fig)
+    buf.seek(0)
+    return buf.read()
+
+
 # ---------- convenience ----------
 
 def save_to(fig: Figure, path: str | Path, *, create_dirs: bool = True) -> Path:

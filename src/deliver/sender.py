@@ -88,12 +88,16 @@ def _dry_run(composed: ComposedEmail, today: date) -> None:
         composed.html_body_template,
         today,
         chart_paths=composed.chart_paths,
+        equation_path=getattr(composed, "equation_path", None),
     )
     LAST_EMAIL_PATH.write_text(html_preview)
     logger.info("[DRY RUN] Email written to %s", LAST_EMAIL_PATH)
     for p in composed.chart_paths:
         if p.exists():
             logger.info("[DRY RUN] Chart at %s", p)
+    eq_path = getattr(composed, "equation_path", None)
+    if eq_path and eq_path.exists():
+        logger.info("[DRY RUN] Equation image at %s", eq_path)
     if composed.fact_check_flags:
         logger.info("[DRY RUN] Fact-check flags: %s", composed.fact_check_flags)
     _print_summary(composed)
@@ -168,6 +172,16 @@ def _build_mime(composed: ComposedEmail, from_addr: str, to_addr: str) -> MIMEMu
             img.add_header("Content-ID", f"<chart_{i}>")
             img.add_header("Content-Disposition", "inline", filename=path.name)
             outer.attach(img)
+
+    # Inline equation image — CID = equation_0
+    eq_path = getattr(composed, "equation_path", None)
+    if eq_path and eq_path.exists():
+        with eq_path.open("rb") as f:
+            img_data = f.read()
+        img = MIMEImage(img_data, "png")
+        img.add_header("Content-ID", "<equation_0>")
+        img.add_header("Content-Disposition", "inline", filename=eq_path.name)
+        outer.attach(img)
 
     return outer
 

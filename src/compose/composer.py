@@ -543,6 +543,12 @@ CHART PLACEHOLDERS:
 - Place each placeholder immediately after the paragraph it illustrates. Never place two placeholders in the same paragraph block.
 - Do not write "the chart above/below" — let the chart speak.
 
+EQUATION PLACEHOLDER:
+- If the finding involves a regression model (e.g. OLS, event study), emit {{EQUATION}} as a standalone line in body_html immediately after the sentence that introduces the regression specification — typically in The Analysis section.
+- {{EQUATION}} renders as a typeset formula image. It is for the regression model itself, not for scalar numbers — do not use it to show a single coefficient value.
+- Only emit {{EQUATION}} when a regression equation is genuinely central to understanding the analysis. Omit it for correlation-only or descriptive findings.
+- Whether an equation is available is indicated in the FINDING RECORD below under EQUATION.
+
 TABLES:
 - Use an HTML table (<table>, <tr>, <th>, <td>) when presenting 3+ data points that share a common structure (e.g., percentile readings across lookback windows, regime durations, correlation values at multiple lags).
 - Tables replace the prose enumeration of numbers — do not repeat table contents in surrounding prose.
@@ -588,7 +594,7 @@ CRITICAL JSON RULES — violations will break parsing:
 - No literal newlines inside string values. Use the two-character sequence \n instead.
 - No unescaped double-quotes inside string values. Use \" instead, or use HTML &quot; inside the HTML.
 - body_html may use <p>, <strong>, <em>, <ul>, <li>, <h3>, <a href="...">, <table>, <tr>, <th>, <td>, <pre> tags only. No divs. No h1 or h2.
-- body_html may include {{CHART_1}}, {{CHART_2}}, {{CHART_3}} as literal placeholder strings (they will be replaced).
+- body_html may include {{CHART_1}}, {{CHART_2}}, {{CHART_3}}, and {{EQUATION}} as literal placeholder strings (they will be replaced).
 - body_text is plain text with no HTML tags and no chart placeholders.
 Example structure (not content): {"subject": "...", "body_html": "<p>...</p>\n<h3>The Concept</h3>\n<p>...</p>\n<h3>The Analysis</h3>\n<p>...</p>", "body_text": "..."}
 """
@@ -826,6 +832,47 @@ def fact_check_draft(draft: dict, pick: LessonPick, ctx: dict[str, SeriesSnapsho
     except (ValueError, json.JSONDecodeError) as e:
         logger.warning("Fact-check parse error: %s", e)
         return {"flags": ["Fact-check response could not be parsed"], "approved": True}
+
+
+# ---------- equation generation ----------
+
+# Latex strings use matplotlib mathtext notation (no \text{}, use \mathrm{}).
+# Keys are matched against finding.slug (substring) then finding.kind.
+_EQUATION_LATEX: dict[str, str] = {
+    # FOMC OLS regression: DGS10 ~ timing + path, per era
+    "fomc_dgs10_timing_path_ols": (
+        r"\Delta y_{10y,t} = \alpha"
+        r" + \beta_1 \cdot \mathrm{timing}_t"
+        r" + \beta_2 \cdot \mathrm{path}_t"
+        r" + \varepsilon_t"
+    ),
+    # Cochrane-Piazzesi bond excess return regression
+    "cp_factor_signal": (
+        r"rx_{t \to t+1}^{(n)} = \alpha + \beta \cdot \mathrm{CP}_t + \varepsilon_{t+1}"
+    ),
+}
+
+
+def _equation_latex(finding: "Finding") -> str | None:
+    """Return the mathtext LaTeX string for this finding's regression, or None."""
+    for key, latex in _EQUATION_LATEX.items():
+        if key in finding.slug or key == finding.kind:
+            return latex
+    return None
+
+
+def generate_equation_image(finding: "Finding", chart_dir: Path, today: date) -> Path | None:
+    """Render the regression equation to PNG and save. Returns path or None."""
+    latex = _equation_latex(finding)
+    if not latex:
+        return None
+    from src.analytics.charts import render_equation_image
+    png_bytes = render_equation_image(latex)
+    slug_short = finding.slug[:60]
+    out = chart_dir / f"{today.isoformat()}_{slug_short}_equation.png"
+    out.write_bytes(png_bytes)
+    logger.info("Equation image saved: %s", out)
+    return out
 
 
 # ---------- chart generation ----------
@@ -1207,6 +1254,7 @@ _HTML_TEMPLATE = """\
 """
 
 _CHART_DIV = '<div style="margin:24px 0;"><img src="{src}" style="max-width:100%; height:auto;" alt="Chart {n}"></div>'
+_EQUATION_DIV = '<div style="margin:16px auto; text-align:center;"><img src="{src}" style="max-height:48px; height:auto;" alt="Regression equation"></div>'
 
 
 def render_html(
@@ -1215,6 +1263,8 @@ def render_html(
     today: date,
     chart_paths: list[Path] | None = None,
     chart_cids: list[str] | None = None,
+    equation_path: Path | None = None,
+    equation_cid: str | None = None,
 ) -> str:
     """Render the email HTML, substituting {{CHART_N}} placeholders.
 
@@ -1243,8 +1293,22 @@ def render_html(
             _CHART_DIV.format(src=f"cid:{cid}", n=i),
         )
 
-    # Strip any remaining unreplaced placeholders
+    # Strip any remaining unreplaced chart placeholders
     body_html = re.sub(r"\{\{CHART_\d+\}\}", "", body_html)
+
+    # Replace {{EQUATION}} placeholder
+    if equation_cid:
+        body_html = body_html.replace(
+            "{{EQUATION}}",
+            _EQUATION_DIV.format(src=f"cid:{equation_cid}"),
+        )
+    elif equation_path and equation_path.exists():
+        data = base64.b64encode(equation_path.read_bytes()).decode()
+        body_html = body_html.replace(
+            "{{EQUATION}}",
+            _EQUATION_DIV.format(src=f"data:image/png;base64,{data}"),
+        )
+    body_html = body_html.replace("{{EQUATION}}", "")  # strip if unused
 
     # Append market snapshot + release calendar below the body
     tables_html = ""
@@ -1272,9 +1336,10 @@ def render_html(
 class ComposedEmail:
     subject: str
     html_body: str          # Final HTML with CID references (for live send)
-    html_body_template: str # Body HTML with {{CHART_N}} placeholders (for dry-run re-render)
+    html_body_template: str # Body HTML with {{CHART_N}}/{{EQUATION}} placeholders (for dry-run re-render)
     text_body: str
     chart_paths: list[Path]
+    equation_path: Path | None
     fact_check_flags: list[str]
     approved: bool
     data_context: dict
@@ -1303,9 +1368,17 @@ def compose_email(pick: LessonPick, today: date | None = None) -> ComposedEmail:
         logger.info("Fact-check flags (%d): %s", len(flags), "; ".join(flags))
 
     chart_paths = generate_charts(pick, ctx, today)
+    chart_dir = CHARTS_DIR / today.isoformat()
+    chart_dir.mkdir(parents=True, exist_ok=True)
+    equation_path = generate_equation_image(pick.finding, chart_dir, today)
+
     cids = [f"chart_{i}" for i in range(len(chart_paths))]
-    template_body = draft["body_html"]  # Preserves {{CHART_N}} placeholders
-    html_body = render_html(draft["subject"], template_body, today, chart_cids=cids)
+    eq_cid = "equation_0" if equation_path else None
+    template_body = draft["body_html"]  # Preserves {{CHART_N}}/{{EQUATION}} placeholders
+    html_body = render_html(
+        draft["subject"], template_body, today,
+        chart_cids=cids, equation_cid=eq_cid,
+    )
 
     return ComposedEmail(
         subject=draft["subject"],
@@ -1313,6 +1386,7 @@ def compose_email(pick: LessonPick, today: date | None = None) -> ComposedEmail:
         html_body_template=template_body,
         text_body=draft.get("body_text", ""),
         chart_paths=chart_paths,
+        equation_path=equation_path,
         fact_check_flags=flags,
         approved=approved,
         data_context=_ctx_to_dict(ctx),
@@ -1337,7 +1411,7 @@ def _scale_evidence_correlations(evidence: dict) -> dict:
 
 def _finding_to_dict(f: Finding) -> dict:
     evidence = _scale_evidence_correlations(f.evidence) if f.evidence else f.evidence
-    return {
+    d = {
         "slug": f.slug,
         "title": f.title,
         "kind": f.kind,
@@ -1350,3 +1424,7 @@ def _finding_to_dict(f: Finding) -> dict:
         "sources": f.sources,
         "status": f.status,
     }
+    latex = _equation_latex(f)
+    if latex:
+        d["equation"] = latex  # shown to LLM so it knows {{EQUATION}} is available
+    return d
