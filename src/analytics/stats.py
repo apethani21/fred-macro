@@ -402,6 +402,214 @@ def local_projection(
     )
 
 
+# ---------- event study ----------
+
+@dataclass
+class EventStudyResult:
+    horizons: np.ndarray               # lag values, e.g. [-1, 0, 1, 2, 3, 4, 5]
+    mean_change: pd.Series             # average 1-day change at each lag across events
+    cumulative_change: pd.Series       # average cumulative change from lag=0
+    std_change: pd.Series              # cross-event std of 1-day changes
+    n_events: pd.Series                # non-null event count at each horizon
+
+
+def event_study(
+    series: pd.Series,
+    event_dates: list[pd.Timestamp],
+    pre: int = 1,
+    post: int = 5,
+) -> EventStudyResult:
+    """Average cumulative response of `series` around `event_dates`.
+
+    For each lag in [-pre, +post], extracts the 1-day change in `series` on
+    the nearest available trading day and averages across events.
+
+    Cumulative change is computed relative to the event day (lag=0): it is the
+    sum of mean_change from lag=1 onward (lag=0 is the same-day move).
+
+    Useful for any identified event set: FOMC meetings, macro releases, etc.
+    """
+    s = series.dropna().sort_index()
+    lags = list(range(-pre, post + 1))
+
+    changes_by_lag: dict[int, list[float]] = {lag: [] for lag in lags}
+
+    for ev_date in event_dates:
+        for lag in lags:
+            target = ev_date + pd.Timedelta(days=lag)
+            # Find nearest index within ±1 calendar day.
+            candidates = s.index[
+                (s.index >= target - pd.Timedelta(days=1)) &
+                (s.index <= target + pd.Timedelta(days=1))
+            ]
+            if len(candidates) == 0:
+                continue
+            actual = candidates[abs(candidates - target).argmin()]
+            pos = s.index.get_loc(actual)
+            if pos == 0:
+                continue
+            chg = float(s.iloc[pos] - s.iloc[pos - 1])
+            changes_by_lag[lag].append(chg)
+
+    horizons = np.array(lags)
+    mean_chg = pd.Series(
+        {lag: float(np.mean(v)) if v else float("nan") for lag, v in changes_by_lag.items()},
+        name="mean_change",
+    )
+    std_chg = pd.Series(
+        {lag: float(np.std(v, ddof=1)) if len(v) > 1 else float("nan") for lag, v in changes_by_lag.items()},
+        name="std_change",
+    )
+    n_ev = pd.Series({lag: len(v) for lag, v in changes_by_lag.items()}, name="n_events")
+
+    # Cumulative from lag=0 inclusive.
+    cumul_vals: dict[int, float] = {}
+    running = 0.0
+    for lag in lags:
+        v = mean_chg.get(lag, float("nan"))
+        if not np.isnan(v):
+            running += v
+        cumul_vals[lag] = running if lag >= 0 else float("nan")
+    cumul = pd.Series(cumul_vals, name="cumulative_change")
+
+    return EventStudyResult(
+        horizons=horizons,
+        mean_change=mean_chg,
+        cumulative_change=cumul,
+        std_change=std_chg,
+        n_events=n_ev,
+    )
+
+
+# ---------- structural breaks (Bai-Perron via dynamic programming) ----------
+
+@dataclass
+class StructuralBreakResult:
+    break_dates: list[pd.Timestamp]   # estimated break dates (left edge of new regime)
+    n_breaks: int                      # number of breaks in the selected model
+    regimes: pd.Series                 # 0-indexed integer label per observation
+    regime_stats: pd.DataFrame         # columns: regime, start, end, n, mean, std
+    bic_selected: bool                 # True if n_breaks was BIC-chosen
+    bic_curve: pd.Series | None        # BIC at k=0..max_breaks when BIC-selected
+
+
+def structural_breaks(
+    s: pd.Series,
+    max_breaks: int = 5,
+    n_breaks: int | None = None,
+    min_segment: int | None = None,
+    resample: str | None = None,
+    max_obs: int = 1500,
+) -> StructuralBreakResult:
+    """Bai-Perron structural break detection via dynamic programming (ruptures Dynp, l2 cost).
+
+    Detects mean shifts in `s`. Pass a rolling-correlation series, a level
+    series (rates, spreads), or first-differences — the l2 cost tests for
+    shifts in the conditional mean.
+
+    Parameters
+    ----------
+    s            : Series with a DatetimeIndex.
+    max_breaks   : Maximum number of breaks to consider for BIC selection.
+    n_breaks     : If set, skips BIC and uses this many breaks directly.
+    min_segment  : Minimum observations per segment. Rule of thumb: 24 for
+                   monthly, 8 for quarterly, 5 for annual. Defaults to
+                   max(len(s) // (max_breaks + 2), 3).
+    resample     : Pandas offset alias ('ME', 'QE', 'YE') to resample before
+                   fitting. Applied before max_obs check.
+    max_obs      : If series exceeds this length after any resampling, auto-
+                   resample to monthly ('ME'). Dynp is O(n²); daily series
+                   of 15k obs will hang. Default 1500.
+
+    Returns
+    -------
+    StructuralBreakResult with break_dates, regime_stats, and BIC curve.
+    """
+    import ruptures as rpt
+
+    x = s.dropna()
+    if x.size < 10:
+        raise ValueError(f"Series too short after dropna ({x.size} obs)")
+
+    if resample:
+        x = x.resample(resample).mean().dropna()
+    if x.size > max_obs:
+        x = x.resample("ME").mean().dropna()
+
+    n = x.size
+    if min_segment is None:
+        min_segment = max(n // (max_breaks + 2), 3)
+
+    signal = x.values.reshape(-1, 1)
+    algo = rpt.Dynp(model="l2", min_size=min_segment, jump=1).fit(signal)
+
+    bic_selected = n_breaks is None
+    bic_curve: pd.Series | None = None
+
+    if bic_selected:
+        # BIC: n*log(RSS/n) + (k+1)*log(n)  where k+1 = number of segments
+        bics: dict[int, float] = {}
+        for k in range(0, max_breaks + 1):
+            try:
+                bkps = algo.predict(n_bkps=k)
+                # ruptures returns breakpoint indices (right-exclusive); last is always n
+                rss = _rss_from_breakpoints(signal[:, 0], bkps)
+                bics[k] = n * np.log(rss / n) + (k + 1) * np.log(n)
+            except rpt.exceptions.BadSegmentationParameters:
+                break
+        if not bics:
+            raise ValueError("No valid segmentation found — try reducing max_breaks or min_segment")
+        best_k = int(min(bics, key=bics.__getitem__))
+        bic_curve = pd.Series(bics, name="bic")
+        n_breaks = best_k
+
+    bkps = algo.predict(n_bkps=n_breaks)  # type: ignore[arg-type]
+    # bkps is a list of right-exclusive indices, last = n; convert to dates
+    break_indices = [b for b in bkps if b < n]  # drop the trailing sentinel
+    break_dates = [x.index[i] for i in break_indices]
+
+    # Build regime label series
+    boundaries = [0] + break_indices + [n]
+    labels = np.empty(n, dtype=int)
+    for regime_idx, (lo, hi) in enumerate(zip(boundaries[:-1], boundaries[1:])):
+        labels[lo:hi] = regime_idx
+    regimes = pd.Series(labels, index=x.index, name="regime")
+
+    # Regime summary stats
+    rows = []
+    for r in range(n_breaks + 1):  # type: ignore[operator]
+        seg = x[regimes == r]
+        rows.append({
+            "regime": r,
+            "start": seg.index[0],
+            "end": seg.index[-1],
+            "n": len(seg),
+            "mean": float(seg.mean()),
+            "std": float(seg.std()),
+        })
+    regime_stats = pd.DataFrame(rows)
+
+    return StructuralBreakResult(
+        break_dates=break_dates,
+        n_breaks=n_breaks,  # type: ignore[arg-type]
+        regimes=regimes,
+        regime_stats=regime_stats,
+        bic_selected=bic_selected,
+        bic_curve=bic_curve,
+    )
+
+
+def _rss_from_breakpoints(signal: np.ndarray, bkps: list[int]) -> float:
+    """Total residual sum of squares for a piecewise-constant fit."""
+    rss = 0.0
+    prev = 0
+    for b in bkps:
+        seg = signal[prev:b]
+        rss += float(np.sum((seg - seg.mean()) ** 2))
+        prev = b
+    return max(rss, 1e-12)  # guard against log(0) when signal is constant
+
+
 def granger_min_p(y: pd.Series, x: pd.Series, max_lag: int = 4) -> dict[int, float]:
     """Granger-causality F-test p-values for x → y at each lag up to `max_lag`.
 

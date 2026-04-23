@@ -338,6 +338,96 @@ def detect_regime_transition(
 
 
 # -------------------------------------------------------------------------
+# Structural break: Bai-Perron tested mean shift in a series or rolling corr.
+# -------------------------------------------------------------------------
+
+def detect_structural_break(
+    series: pd.Series,
+    *,
+    series_id: str,
+    max_breaks: int = 5,
+    min_segment: int | None = None,
+    resample: str | None = None,
+    max_obs: int = 1500,
+    min_mean_shift: float = 0.0,
+    max_break_age_years: float = 15.0,
+    is_correlation: bool = False,
+) -> list[DetectorHit]:
+    """Bai-Perron structural break detection on `series`.
+
+    Fires when BIC selects ≥1 break, the most recent break is within
+    `max_break_age_years`, and the mean shift between the last two regimes
+    exceeds `min_mean_shift`.
+
+    Pass `is_correlation=True` when `series` is a rolling-correlation series
+    so that the score and tags are labelled accordingly.
+    """
+    from src.analytics.stats import structural_breaks
+
+    try:
+        result = structural_breaks(
+            series,
+            max_breaks=max_breaks,
+            min_segment=min_segment,
+            resample=resample,
+            max_obs=max_obs,
+        )
+    except (ValueError, Exception):
+        return []
+
+    if result.n_breaks < 1:
+        return []
+
+    latest_date = series.dropna().index[-1]
+    most_recent_break = result.break_dates[-1]
+    break_age_years = float((latest_date - most_recent_break).days / 365.25)
+    if break_age_years > max_break_age_years:
+        return []
+
+    # Mean shift between last two regimes
+    stats = result.regime_stats
+    last_mean = float(stats.iloc[-1]["mean"])
+    prior_mean = float(stats.iloc[-2]["mean"]) if len(stats) >= 2 else last_mean
+    mean_shift = last_mean - prior_mean
+
+    if abs(mean_shift) < min_mean_shift:
+        return []
+
+    full_std = float(series.dropna().std()) or 1.0
+    recency_factor = max(0.2, 1.0 - break_age_years / max_break_age_years)
+    score = abs(mean_shift) / full_std * recency_factor
+
+    tags: tuple[str, ...] = ("structural-break", "regime-shift")
+    if is_correlation:
+        tags = tags + ("correlation-regime",)
+
+    return [DetectorHit(
+        kind="structural_break",
+        series_ids=(series_id,),
+        window=f"Bai-Perron Dynp, BIC, n_breaks={result.n_breaks}",
+        evidence={
+            "series_id": series_id,
+            "is_correlation": is_correlation,
+            "n_breaks": result.n_breaks,
+            "break_dates": [str(d.date()) for d in result.break_dates],
+            "most_recent_break_date": str(most_recent_break.date()),
+            "break_age_years": round(break_age_years, 2),
+            "last_regime_mean": round(last_mean, 6),
+            "prior_regime_mean": round(prior_mean, 6),
+            "mean_shift": round(mean_shift, 6),
+            "regime_stats": result.regime_stats.assign(
+                start=result.regime_stats["start"].astype(str),
+                end=result.regime_stats["end"].astype(str),
+            ).to_dict("records"),
+            "bic_selected": result.bic_selected,
+            "bic_curve": result.bic_curve.to_dict() if result.bic_curve is not None else None,
+        },
+        score=score,
+        tags=tags,
+    )]
+
+
+# -------------------------------------------------------------------------
 # Structural: cointegration that has broken down.
 # -------------------------------------------------------------------------
 

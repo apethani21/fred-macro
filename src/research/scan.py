@@ -27,6 +27,7 @@ from .detectors import (
     detect_lead_lag_change,
     detect_notable_move,
     detect_regime_transition,
+    detect_structural_break,
 )
 from .findings import Finding, append_stats, existing_slugs, make_slug, write_findings_md
 
@@ -242,6 +243,137 @@ def scan_regime_transitions(watchlist: Iterable[str]) -> tuple[list[DetectorHit]
     return hits, stats_df, skipped
 
 
+def scan_structural_breaks_series(
+    watchlist: Iterable[str],
+    min_mean_shift_pct_std: float = 0.3,
+) -> tuple[list[DetectorHit], pd.DataFrame, list[tuple[str, str]]]:
+    """Run Bai-Perron on each series in the watchlist.
+
+    `min_mean_shift_pct_std` is the minimum shift (as a fraction of the
+    series's own std) required to fire — filters noise from series with
+    continuous micro-breaks.
+    """
+    hits: list[DetectorHit] = []
+    skipped: list[tuple[str, str]] = []
+    rows: list[dict] = []
+
+    for sid in watchlist:
+        try:
+            s = D.load_series(sid)
+        except (FileNotFoundError, KeyError) as e:
+            skipped.append((sid, f"load: {e}"))
+            continue
+        full_std = float(s.dropna().std()) or 1.0
+        found = detect_structural_break(
+            s,
+            series_id=sid,
+            min_mean_shift=full_std * min_mean_shift_pct_std,
+        )
+        for h in found:
+            hits.append(h)
+            ev = h.evidence
+            rows.append({
+                "series_id": sid,
+                "series_b": None,
+                "kind": "series",
+                "n_breaks": ev["n_breaks"],
+                "break_dates": str(ev["break_dates"]),
+                "most_recent_break_date": ev["most_recent_break_date"],
+                "mean_shift_last": ev["mean_shift"],
+                "run_date": date.today().isoformat(),
+            })
+
+    stats_df = pd.DataFrame(rows) if rows else pd.DataFrame(columns=[
+        "series_id", "series_b", "kind", "n_breaks", "break_dates",
+        "most_recent_break_date", "mean_shift_last", "run_date",
+    ])
+    return hits, stats_df, skipped
+
+
+def scan_structural_breaks_corr(
+    pairs: Iterable[tuple[str, str, str]],
+    window_daily: int = 252,
+    window_monthly: int = 36,
+    min_corr_shift: float = 0.2,
+) -> tuple[list[DetectorHit], pd.DataFrame, list[tuple[str, str]]]:
+    """Run Bai-Perron on the rolling correlation series for each pair.
+
+    Resamples the rolling corr to monthly before fitting so daily series
+    don't produce 10k-obs inputs (Dynp is O(n²)).
+    """
+    hits: list[DetectorHit] = []
+    skipped: list[tuple[str, str]] = []
+    rows: list[dict] = []
+
+    for a_id, b_id, label in pairs:
+        try:
+            df = D.load_aligned([a_id, b_id], how="coarsest", dropna="any")
+        except (FileNotFoundError, KeyError) as e:
+            skipped.append((f"{a_id}×{b_id}", f"load: {e}"))
+            continue
+
+        # Infer frequency from index spacing to pick appropriate window
+        if df.shape[0] < 60:
+            skipped.append((f"{a_id}×{b_id}", "insufficient overlap"))
+            continue
+        median_gap = float(pd.Series((df.index[1:] - df.index[:-1]).days).median())
+        is_daily = median_gap <= 7
+        window = window_daily if is_daily else window_monthly
+
+        if df.shape[0] < window * 2:
+            skipped.append((f"{a_id}×{b_id}", f"insufficient overlap ({df.shape[0]} < {window*2})"))
+            continue
+
+        rc = S.rolling_corr(df[a_id].diff(), df[b_id].diff(), window=window, method="spearman").dropna()
+        if rc.size < 24:
+            skipped.append((f"{a_id}×{b_id}", "rolling corr too short"))
+            continue
+
+        # Resample to monthly — structural breaks in correlations don't need
+        # daily resolution and keeps the Dynp runtime manageable.
+        rc_monthly = rc.resample("ME").mean().dropna()
+        pair_id = f"{a_id}_x_{b_id}"
+
+        found = detect_structural_break(
+            rc_monthly,
+            series_id=pair_id,
+            min_mean_shift=min_corr_shift,
+            max_obs=1500,
+            is_correlation=True,
+        )
+        for h in found:
+            # Tag with the pair label and both series IDs for the composer.
+            h.evidence["series_a"] = a_id
+            h.evidence["series_b"] = b_id
+            h.evidence["label"] = label
+            h = DetectorHit(
+                kind=h.kind,
+                series_ids=(a_id, b_id),
+                window=h.window,
+                evidence=h.evidence,
+                score=h.score,
+                tags=h.tags,
+            )
+            hits.append(h)
+            ev = h.evidence
+            rows.append({
+                "series_id": a_id,
+                "series_b": b_id,
+                "kind": "rolling_corr",
+                "n_breaks": ev["n_breaks"],
+                "break_dates": str(ev["break_dates"]),
+                "most_recent_break_date": ev["most_recent_break_date"],
+                "mean_shift_last": ev["mean_shift"],
+                "run_date": date.today().isoformat(),
+            })
+
+    stats_df = pd.DataFrame(rows) if rows else pd.DataFrame(columns=[
+        "series_id", "series_b", "kind", "n_breaks", "break_dates",
+        "most_recent_break_date", "mean_shift_last", "run_date",
+    ])
+    return hits, stats_df, skipped
+
+
 # -------------------------------------------------------------------------
 # Hit → Finding conversion
 # -------------------------------------------------------------------------
@@ -318,6 +450,54 @@ def _finding_from_hit(hit: DetectorHit, today: date) -> Finding:
             f"regime. Latest reading {ev['latest_value']:.4g} (regime cut-points at "
             f"{[round(v, 4) for v in ev['cut_values']]})."
         )
+    elif hit.kind == "structural_break":
+        ev = hit.evidence
+        is_corr = ev.get("is_correlation", False)
+        a_id = ev.get("series_a") or ev["series_id"]
+        b_id = ev.get("series_b")
+        label = ev.get("label", ev["series_id"])
+        break_dates_str = ", ".join(ev["break_dates"])
+        last_mean = ev["last_regime_mean"]
+        prior_mean = ev["prior_regime_mean"]
+        shift = ev["mean_shift"]
+        most_recent = ev["most_recent_break_date"]
+        n_breaks = ev["n_breaks"]
+
+        if is_corr:
+            title = (
+                f"{label}: rolling correlation structural break at {most_recent} "
+                f"(mean shift {prior_mean:+.2f} → {last_mean:+.2f})"
+            )
+            slug = make_slug("structural_break_corr", (a_id, b_id or ""))
+            regime_lines = "; ".join(
+                f"regime {r['regime']}: {r['start'][:7]}–{r['end'][:7]}, mean={r['mean']:+.2f}"
+                for r in ev["regime_stats"]
+            )
+            claim = (
+                f"Bai-Perron (Dynp, l2 cost, BIC-selected) finds {n_breaks} structural break(s) "
+                f"in the monthly rolling Spearman correlation between {a_id} and {b_id}. "
+                f"Break date(s): {break_dates_str}. "
+                f"Mean correlation shifted from {prior_mean:+.2f} (prior regime) to "
+                f"{last_mean:+.2f} (current regime), a change of {shift:+.2f}. "
+                f"Regimes: {regime_lines}."
+            )
+        else:
+            sid = ev["series_id"]
+            title = (
+                f"{sid}: structural break at {most_recent} "
+                f"(mean shift {prior_mean:+.4g} → {last_mean:+.4g})"
+            )
+            slug = make_slug("structural_break", (sid,))
+            regime_lines = "; ".join(
+                f"regime {r['regime']}: {r['start'][:7]}–{r['end'][:7]}, mean={r['mean']:.4g}"
+                for r in ev["regime_stats"]
+            )
+            claim = (
+                f"Bai-Perron (Dynp, l2 cost, BIC-selected) finds {n_breaks} structural break(s) "
+                f"in {sid}. Break date(s): {break_dates_str}. "
+                f"Mean in the current regime ({last_mean:.4g}) vs prior regime ({prior_mean:.4g}), "
+                f"shift {shift:+.4g}. Regimes: {regime_lines}."
+            )
     elif hit.kind == "cointegration_break":
         a, b = hit.series_ids
         title = f"{a} vs {b}: cointegration present in full sample but not in recent window"
@@ -385,6 +565,18 @@ def run_scan(
     rh, rdf, rsk = scan_regime_transitions(notable_watchlist)
     report.hits.extend(rh); report.skipped.extend(rsk)
     append_stats("regime_labels", rdf); report.stats_rows_written["regime_labels"] = len(rdf)
+
+    log.info("scan: structural breaks (series) on %d series", len(notable_watchlist))
+    sbsh, sbsdf, sbssk = scan_structural_breaks_series(notable_watchlist)
+    report.hits.extend(sbsh); report.skipped.extend(sbssk)
+    append_stats("structural_breaks", sbsdf); report.stats_rows_written["structural_breaks_series"] = len(sbsdf)
+
+    log.info("scan: structural breaks (rolling corr) on %d pairs", len(pairs))
+    sbch, sbcdf, sbcsk = scan_structural_breaks_corr(pairs)
+    report.hits.extend(sbch); report.skipped.extend(sbcsk)
+    if len(sbcdf):
+        append_stats("structural_breaks", sbcdf)
+    report.stats_rows_written["structural_breaks_corr"] = len(sbcdf)
 
     # Turn hits into findings and write markdown.
     prior = existing_slugs()

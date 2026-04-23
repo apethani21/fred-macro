@@ -29,6 +29,7 @@ STATS_FILES = {
     "rolling_correlations": STATS_DIR / "rolling_correlations.parquet",
     "lead_lag": STATS_DIR / "lead_lag.parquet",
     "regime_labels": STATS_DIR / "regime_labels.parquet",
+    "structural_breaks": STATS_DIR / "structural_breaks.parquet",
 }
 
 
@@ -305,6 +306,7 @@ def append_stats(name: str, rows: pd.DataFrame) -> Path:
         "rolling_correlations": ["series_a", "series_b", "window", "date", "method"],
         "lead_lag": ["series_a", "series_b", "window", "lag"],
         "regime_labels": ["series_id", "date"],
+        "structural_breaks": ["series_id", "series_b", "kind", "run_date"],
     }[name]
     combined = combined.drop_duplicates(subset=dedup_keys, keep="last").reset_index(drop=True)
     save_parquet_atomic(combined, path)

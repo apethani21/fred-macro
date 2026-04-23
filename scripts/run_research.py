@@ -19,6 +19,12 @@ Common modes:
 
   python scripts/run_research.py --enrich --slug regime_transition__vixcls__2026-04-09
       Enrich only a specific finding by slug substring.
+
+  python scripts/run_research.py --fomc
+      Run M7 FOMC event study (timing/path decomposition, cross-asset regressions).
+
+  python scripts/run_research.py --fomc-only
+      Run FOMC event study only, skip the core pattern scan.
 """
 from __future__ import annotations
 
@@ -49,6 +55,8 @@ def main() -> int:
     parser.add_argument("--dry-run", action="store_true", help="Run detectors but don't write outputs.")
     parser.add_argument("--enrich", action="store_true", help="Run web research to populate finding Sources blocks.")
     parser.add_argument("--slug", help="Enrich only the finding whose slug contains this substring.")
+    parser.add_argument("--fomc", action="store_true", help="Also run M7 FOMC event study.")
+    parser.add_argument("--fomc-only", action="store_true", help="Run FOMC event study only (skip core scan).")
     args = parser.parse_args()
 
     pairs = None
@@ -92,6 +100,17 @@ def main() -> int:
             F.append_stats = lambda *a, **kw: None                # type: ignore[assignment]
             research_scan.append_stats = F.append_stats           # type: ignore[assignment]
             research_scan.write_findings_md = F.write_findings_md # type: ignore[assignment]
+
+        fomc_findings: list = []
+        if args.fomc or args.fomc_only:
+            from src.research.fomc_study import run_fomc_study
+            fomc_findings = run_fomc_study(today=today, overwrite_findings=args.overwrite)
+            run.set("fomc_findings", len(fomc_findings))
+            print(f"FOMC event study: {len(fomc_findings)} finding(s) written.")
+
+        if args.fomc_only:
+            build_health_snapshot()
+            return 0
 
         report = research_scan.run_scan(
             pairs=pairs,
