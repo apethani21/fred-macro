@@ -321,6 +321,72 @@ RELATIONSHIPS: tuple[Relationship, ...] = (
         tags=("rates", "europe", "global"),
     ),
 
+    # ── ECB / euro area ───────────────────────────────────────────────────────
+
+    Relationship(
+        name="BTP-Bund spread: fragmentation risk monitor",
+        series=("ECB.IT.10Y", "ECB.DE.10Y"),
+        kind="spread",
+        basis=(
+            "The BTP-Bund 10Y spread is the canonical EA sovereign stress indicator. "
+            "Widening reflects Italian fiscal risk, ECB credibility concerns, or political uncertainty. "
+            "Key thresholds: ~130bp = stressed, ~200bp = elevated (TPI informal trigger zone; "
+            "ECB announced TPI in July 2022 when spread reached ~230bp), ~300bp = crisis "
+            "(2011-12 peak ~550bp). The announcement effect alone compressed spreads 50-80bp in 2022, "
+            "confirming the backstop is priced-in before activation. "
+            "Source: ECB SDW IRS flow (Maastricht convergence criterion rates)."
+        ),
+        tags=("rates", "europe", "sovereign", "ecb"),
+    ),
+    Relationship(
+        name="ECB DFR vs US Fed funds: policy divergence",
+        series=("ECB.DFR", "DFF"),
+        kind="spread",
+        basis=(
+            "ECB deposit facility rate minus US effective fed funds, in percentage points. "
+            "Positive = ECB tighter than Fed (rare; occurred briefly 1999-2000, never since 2009). "
+            "Negative = Fed tighter (typical post-2022 as Fed front-loaded and ECB lagged). "
+            "Divergence drives EUR/USD via uncovered interest parity and cross-border capital flows. "
+            "A narrowing spread (ECB cutting faster or Fed holding) is USD-negative and supports "
+            "EUR-denominated assets. The 2022-24 episode produced the widest Fed-over-ECB spread "
+            "on record at ~250bp, reflecting the US supply-shock-driven inflation front-loading."
+        ),
+        tags=("policy", "europe", "ecb", "fx"),
+    ),
+    Relationship(
+        name="ECB negotiated wages lead EA core HICP",
+        series=("ECB.WAGES.NEG", "ECB.HICP.EA.CORE"),
+        kind="lead_lag",
+        basis=(
+            "EA negotiated wages (quarterly) vs EA core HICP ex food/energy (monthly). "
+            "Sector-level wage agreements (Austria, Germany, Netherlands) are set annually and "
+            "index to past inflation. This creates a mechanical 2-4 quarter lead from wages to "
+            "core services inflation — the 'second-round effects' channel the ECB watches most closely. "
+            "When wage growth exceeds core inflation, it signals sticky services inflation ahead; "
+            "when wages decelerate before core HICP, it signals disinflation is broadening. "
+            "Source: ECB SDW INW flow (negotiated wages index, annual growth rate)."
+        ),
+        tags=("labor", "inflation", "europe", "ecb"),
+        max_lag=6,
+    ),
+    Relationship(
+        name="EA M3 money supply leads EA HICP",
+        series=("ECB.M3.EA", "ECB.HICP.EA.TOTAL"),
+        kind="lead_lag",
+        basis=(
+            "EA M3 annual growth rate vs EA HICP all-items YoY. "
+            "Quantity theory (MV=PQ) predicts excess money growth leads inflation by 12-18 months. "
+            "ECB targeted M3 growth (reference value 4.5% YoY) as its primary nominal anchor "
+            "pre-2003 before shifting to two-pillar framework. The relationship weakened post-GFC "
+            "as velocity declined with QE-driven reserve accumulation. "
+            "The 2020-21 M3 surge (12%+ YoY) preceded the 2022 inflation spike — "
+            "the lead-lag revived briefly. "
+            "Source: ECB SDW BSI flow (seasonally adjusted M3, annual growth rate)."
+        ),
+        tags=("money_supply", "inflation", "europe", "ecb"),
+        max_lag=18,
+    ),
+
     # ── Fed funds / short end ─────────────────────────────────────────────────
 
     Relationship(

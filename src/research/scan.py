@@ -571,6 +571,127 @@ def scan_bond_predictability() -> tuple[list[DetectorHit], pd.DataFrame, list[tu
 
 
 # -------------------------------------------------------------------------
+# BTP-Bund regime scanner
+# -------------------------------------------------------------------------
+
+# Thresholds in percentage points (same as the raw spread series units).
+_BTP_BUND_THRESHOLDS_PP = {
+    "elevated": 2.00,    # TPI informal trigger zone (~230bp in 2022)
+    "stressed": 1.30,
+    "moderate": 0.80,
+}
+
+_BTP_BUND_REGIME_LABELS = {
+    "elevated": "elevated (≥200bp; TPI trigger zone)",
+    "stressed": "stressed (130-200bp)",
+    "moderate": "moderate (80-130bp)",
+    "benign": "benign (<80bp)",
+    "crisis": "crisis (≥300bp)",
+}
+
+
+def _btp_bund_label(spread_pp: float) -> str:
+    if spread_pp >= 3.00:
+        return "crisis"
+    if spread_pp >= _BTP_BUND_THRESHOLDS_PP["elevated"]:
+        return "elevated"
+    if spread_pp >= _BTP_BUND_THRESHOLDS_PP["stressed"]:
+        return "stressed"
+    if spread_pp >= _BTP_BUND_THRESHOLDS_PP["moderate"]:
+        return "moderate"
+    return "benign"
+
+
+def scan_btp_bund_regime() -> tuple[list[DetectorHit], list[tuple[str, str]]]:
+    """Monitor BTP-Bund spread for regime crossings and tail readings.
+
+    Fires a `btp_bund_regime` hit when:
+      - The spread is currently in the 'stressed', 'elevated', or 'crisis' regime, OR
+      - The spread has crossed a meaningful level in the last 3 months (regime change).
+
+    Always computes the regime snapshot regardless of whether a hit fires;
+    the hit's evidence block carries full context for the composer.
+    """
+    hits: list[DetectorHit] = []
+    skipped: list[tuple[str, str]] = []
+
+    try:
+        s = D.load_series("ECB.BTPBUND.SPREAD").dropna()
+    except (FileNotFoundError, KeyError) as e:
+        skipped.append(("ECB.BTPBUND.SPREAD", f"load: {e}"))
+        return hits, skipped
+
+    if len(s) < 24:
+        skipped.append(("ECB.BTPBUND.SPREAD", f"insufficient history ({len(s)} obs)"))
+        return hits, skipped
+
+    latest_val = float(s.iloc[-1])
+    latest_date = s.index[-1]
+    current_regime = _btp_bund_label(latest_val)
+
+    # Historical context.
+    pct = float(S.percentile_rank(s))
+    z = float(S.zscore_vs_history(s))
+    hist_median = float(s.median())
+    hist_p90 = float(s.quantile(0.90))
+    hist_max = float(s.max())
+    hist_min = float(s.min())
+
+    # Regime 3 months ago (approximately 3 monthly observations).
+    prior_window = min(3, len(s) - 1)
+    prior_val = float(s.iloc[-1 - prior_window])
+    prior_regime = _btp_bund_label(prior_val)
+
+    regime_crossed = current_regime != prior_regime
+
+    # Fire if in a stressed/elevated/crisis regime OR regime just changed.
+    should_fire = (
+        current_regime in ("stressed", "elevated", "crisis")
+        or regime_crossed
+    )
+
+    if should_fire:
+        score = {
+            "benign": 0.2,
+            "moderate": 0.3,
+            "stressed": 0.6,
+            "elevated": 0.85,
+            "crisis": 1.0,
+        }.get(current_regime, 0.5)
+        # Extra score bump for a fresh regime crossing.
+        if regime_crossed:
+            score = min(1.0, score + 0.15)
+
+        hits.append(DetectorHit(
+            kind="btp_bund_regime",
+            series_ids=("ECB.IT.10Y", "ECB.DE.10Y"),
+            window=prior_window,
+            evidence={
+                "latest_value_pp": latest_val,
+                "latest_value_bp": round(latest_val * 100, 1),
+                "latest_date": latest_date.date().isoformat(),
+                "current_regime": current_regime,
+                "current_regime_label": _BTP_BUND_REGIME_LABELS[current_regime],
+                "prior_regime": prior_regime,
+                "regime_crossed": regime_crossed,
+                "percentile": pct,
+                "z_score": z,
+                "hist_median_pp": hist_median,
+                "hist_median_bp": round(hist_median * 100, 1),
+                "hist_p90_pp": hist_p90,
+                "hist_p90_bp": round(hist_p90 * 100, 1),
+                "hist_max_bp": round(hist_max * 100, 1),
+                "hist_min_bp": round(hist_min * 100, 1),
+                "n_obs": len(s),
+            },
+            score=score,
+            tags=("europe", "sovereign", "ecb"),
+        ))
+
+    return hits, skipped
+
+
+# -------------------------------------------------------------------------
 # Hit → Finding conversion
 # -------------------------------------------------------------------------
 
@@ -839,6 +960,31 @@ def _finding_from_hit(hit: DetectorHit, today: date) -> Finding:
             f"{'driven by' if shift > 0 else 'suppressed relative to'} {comp}. "
             f"Theoretical basis: {ev.get('basis', '')}."
         )
+    elif hit.kind == "btp_bund_regime":
+        val_bp = ev["latest_value_bp"]
+        regime = ev["current_regime_label"]
+        crossed = ev["regime_crossed"]
+        prior = ev["prior_regime"]
+        pct = ev["percentile"]
+        cross_note = (
+            f" Regime change: was '{prior}', now '{ev['current_regime']}'."
+            if crossed else ""
+        )
+        title = (
+            f"BTP-Bund spread {val_bp:.0f}bp ({ev['current_regime']}): "
+            f"{pct:.1%} of full history"
+        )
+        slug = make_slug("btp_bund_regime", hit.series_ids, extra=ev["latest_date"])
+        claim = (
+            f"The BTP-Bund 10Y sovereign spread (ECB.IT.10Y minus ECB.DE.10Y) stands at "
+            f"{val_bp:.0f}bp ({ev['latest_value_pp']:.3f}pp) as of {ev['latest_date']}, "
+            f"in the '{ev['current_regime']}' regime ({regime}).{cross_note} "
+            f"Percentile rank vs {ev['n_obs']}-month history: {pct:.1%} "
+            f"(historical median {ev['hist_median_bp']:.0f}bp, 90th pctile {ev['hist_p90_bp']:.0f}bp, "
+            f"max {ev['hist_max_bp']:.0f}bp). "
+            f"Robust z-score: {ev['z_score']:+.2f}. "
+            f"TPI informal trigger: ~200bp; 2022 peak ~230bp."
+        )
     else:
         title = f"Unknown hit kind: {hit.kind}"
         slug = make_slug(hit.kind, hit.series_ids)
@@ -925,6 +1071,10 @@ def run_scan(
     bph, bpdf, bpsk = scan_bond_predictability()
     report.hits.extend(bph); report.skipped.extend(bpsk)
     append_stats("bond_predictability", bpdf); report.stats_rows_written["bond_predictability"] = len(bpdf)
+
+    log.info("scan: BTP-Bund regime monitor")
+    bbrh, bbrsk = scan_btp_bund_regime()
+    report.hits.extend(bbrh); report.skipped.extend(bbrsk)
 
     if not skip_relationships:
         log.info("scan: relationship monitor (spread + decomposition)")

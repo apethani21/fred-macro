@@ -24,6 +24,11 @@ CORE_UNIVERSE: dict[str, tuple[str, ...]] = {
     "volatility_equity": ("VIXCLS", "SP500"),
     "commodities_fx": ("DCOILWTICO", "DTWEXBGS"),
     "recession_flag": ("USREC",),
+    # ECB / euro area
+    "ea_policy_rate": ("ECB.DFR", "ECB.ESTR"),
+    "ea_yields": ("ECB.YC.AAA.2Y", "ECB.YC.AAA.10Y", "ECB.DE.10Y", "ECB.IT.10Y"),
+    "ea_spreads": ("ECB.BTPBUND.SPREAD", "ECB.BUND.SLOPE"),
+    "ea_inflation": ("ECB.HICP.EA.TOTAL", "ECB.HICP.EA.CORE", "ECB.M3.EA", "ECB.WAGES.NEG"),
 }
 
 
@@ -51,4 +56,6 @@ NOTABLE_MOVE_WATCHLIST: tuple[str, ...] = (
     "UNRATE", "UMCSENT",
     "DCOILWTICO", "DTWEXBGS", "SP500",
     "SOFR", "DFF",
+    # ECB / euro area
+    "ECB.DFR", "ECB.BTPBUND.SPREAD", "ECB.BUND.SLOPE", "ECB.HICP.EA.CORE",
 )

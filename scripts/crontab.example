@@ -20,8 +20,8 @@ PATH=/home/ubuntu/miniconda3/envs/fred-macro/bin:/home/ubuntu/miniconda3/bin:/us
 FRED_MACRO_DIR=/home/ubuntu/fred-macro
 
 # --- Daily series refresh: 06:00 UTC daily ---
-# Refreshes daily-frequency series (DGS10, DFF, SOFR, VIX, etc.).
-0 6 * * * cd $FRED_MACRO_DIR && python scripts/refresh_data.py >> logs/refresh_data.log 2>&1
+# Refreshes daily-frequency FRED series (DGS10, DFF, SOFR, VIX, etc.) + ECB series.
+0 6 * * * cd $FRED_MACRO_DIR && python scripts/refresh_data.py --ecb >> logs/refresh_data.log 2>&1
 
 # --- Monthly/major-release refresh: 14:30 UTC weekdays ---
 # Runs after the typical US morning release window (8:30 ET = 13:30 UTC).

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Refresh FRED series data.
+"""Refresh FRED and ECB series data.
 
 Common modes:
   python scripts/refresh_data.py --series DGS10 DGS2 --partition daily
@@ -11,6 +11,10 @@ Common modes:
   python scripts/refresh_data.py
       Incremental refresh using the previously-discovered universe in
       data/metadata.parquet. No-op if discovery has never run.
+
+  python scripts/refresh_data.py --ecb
+      Refresh ECB SDW series (deposit rate, HICP, yield curve, M3, wages, etc.).
+      Combinable with the FRED modes above.
 
   python scripts/refresh_data.py --release-calendar
       Refresh data/release_calendar.parquet and data/release_series.parquet.
@@ -29,6 +33,8 @@ sys.path.insert(0, str(PROJECT_ROOT))
 import pandas as pd
 
 from src.ingest.discovery import DiscoveryConfig, discover, universe_by_frequency
+from src.ingest.ecb_client import EcbClient
+from src.ingest.ecb_update import run_ecb_refresh
 from src.ingest.fred_client import FredClient
 from src.ingest.paths import DISCOVERY_PATH, METADATA_PATH
 from src.ingest.release_calendar import refresh_release_calendar, refresh_release_series
@@ -42,6 +48,9 @@ def _universe_from_metadata() -> dict[str, list[str]]:
     meta = load_parquet(METADATA_PATH)
     if meta is None or meta.empty:
         return {}
+    # Exclude ECB series — the FRED client can't fetch them.
+    if "source" in meta.columns:
+        meta = meta[meta["source"].isna() | (meta["source"] == "FRED")]
     out: dict[str, list[str]] = {}
     for freq, group in meta.dropna(subset=["frequency_short"]).groupby("frequency_short"):
         out[freq] = group["series_id"].tolist()
@@ -85,6 +94,7 @@ def main() -> int:
     parser.add_argument("--top-n", type=int, default=10, help="Top-N series per category (with --discover).")
     parser.add_argument("--max-depth", type=int, default=3, help="Max category tree depth (with --discover).")
     parser.add_argument("--max-per-release", type=int, default=200, help="Max series per release (with --discover).")
+    parser.add_argument("--ecb", action="store_true", help="Refresh ECB SDW series (deposit rate, HICP, yield curve, M3, wages, etc.).")
     parser.add_argument("--release-calendar", action="store_true", help="Also refresh the release calendar.")
     parser.add_argument("--skip-refresh", action="store_true", help="Run discovery/calendar but don't refresh series data.")
     args = parser.parse_args()
@@ -146,6 +156,19 @@ def main() -> int:
             run.set("series_errors", total_errors)
             run.set("partitions", len(results))
             exit_code = 1 if total_errors else 0
+
+        # --- ECB refresh ---
+        if args.ecb:
+            ecb_client = EcbClient()
+            ecb_summary = run_ecb_refresh(ecb_client)
+            ecb_errors = len(ecb_summary.errors)
+            ecb_ok = len(ecb_summary.per_series) - ecb_errors
+            print(f"[ECB] {ecb_ok} ok, {ecb_errors} errors")
+            print(ecb_summary.report())
+            run.set("ecb_series_ok", ecb_ok)
+            run.set("ecb_series_errors", ecb_errors)
+            if ecb_errors:
+                exit_code = 1
 
         run.set("exit_code", exit_code)
 
