@@ -610,6 +610,205 @@ def _rss_from_breakpoints(signal: np.ndarray, bkps: list[int]) -> float:
     return max(rss, 1e-12)  # guard against log(0) when signal is constant
 
 
+# ---------- M11: jump detection ----------
+
+@dataclass
+class JumpResult:
+    jump_dates: list[str]               # ISO dates of detected jumps
+    jump_magnitudes: list[float]        # raw change at each jump date
+    jump_zscores: list[float]           # BNS-style z-score at each jump
+    recent_jump: str | None             # most recent jump date, or None
+    recent_jump_z: float | None         # z-score of most recent jump
+    n_jumps_total: int
+    series_id: str
+    window: int
+
+
+def detect_jumps(
+    series: pd.Series,
+    series_id: str,
+    *,
+    window: int = 60,
+    z_threshold: float = 4.0,
+    lookback_days: int = 252,
+) -> JumpResult:
+    """Detect jump discontinuities in a daily series.
+
+    Uses a bipower-variation-inspired approach: robust z-score of each daily
+    change against the rolling window's bipower variation (mean of adjacent
+    absolute-change products × π/2 — the jump-robust variance estimator from
+    Barndorff-Nielsen & Shephard 2004). Falls back to rolling median/MAD when
+    the bipower variance is near zero.
+
+    Returns jump dates where |z| > z_threshold.
+    """
+    s = series.dropna()
+    if len(s) < window + 10:
+        return JumpResult([], [], [], None, None, 0, series_id, window)
+
+    chg = s.diff().dropna()
+
+    # Bipower variation: BPV = (π/2) × mean(|r_t| × |r_{t-1}|) over window
+    abs_chg = chg.abs()
+    adj_product = abs_chg * abs_chg.shift(1)
+    bpv = adj_product.rolling(window, min_periods=window // 2).mean() * (np.pi / 2)
+
+    # Z-score: daily change / sqrt(BPV), capped at MAD fallback when BPV is tiny
+    mad = chg.rolling(window, min_periods=window // 2).apply(
+        lambda x: np.median(np.abs(x - np.median(x))), raw=True
+    )
+    robust_std = mad * 1.4826  # MAD → Gaussian equivalent
+    sigma = bpv.pow(0.5).where(bpv > 1e-10, robust_std)
+
+    z_series = (chg / sigma).replace([np.inf, -np.inf], np.nan).dropna()
+    jumps = z_series[z_series.abs() >= z_threshold]
+
+    # Restrict to lookback for the "recent jump" field
+    cutoff = s.index[-1] - pd.Timedelta(days=lookback_days)
+    recent_jumps = jumps[jumps.index >= cutoff]
+
+    recent_jump: str | None = None
+    recent_jump_z: float | None = None
+    if not recent_jumps.empty:
+        last = recent_jumps.index[-1]
+        recent_jump = str(last.date())
+        recent_jump_z = float(recent_jumps.iloc[-1])
+
+    return JumpResult(
+        jump_dates=[str(d.date()) for d in jumps.index],
+        jump_magnitudes=[float(chg.loc[d]) for d in jumps.index],
+        jump_zscores=[float(z) for z in jumps.values],
+        recent_jump=recent_jump,
+        recent_jump_z=recent_jump_z,
+        n_jumps_total=len(jumps),
+        series_id=series_id,
+        window=window,
+    )
+
+
+# ---------- M10: sentiment → bond return forecast ----------
+
+@dataclass
+class SentimentBondResult:
+    implied_excess_return_bp: float     # model-implied next-month 10Y excess return in bp
+    r_squared: float                    # in-sample OLS R²
+    coefficients: dict[str, float]      # {predictor_name: coefficient in bp per unit}
+    t_stats: dict[str, float]
+    current_predictors: dict[str, float]
+    n_obs: int
+    fit_ok: bool = True
+    error: str = ""
+
+
+def sentiment_bond_forecast(
+    bond_yield: pd.Series,             # 10Y yield (DGS10) — monthly
+    tbill: pd.Series,                  # 3M T-bill (DTB3) — monthly
+    sentiment_series: dict[str, pd.Series],  # {label: series}
+    cp_factor: pd.Series | None = None,      # optional CP factor control (M3)
+    horizon_months: int = 1,
+    newey_west_lags: int = 3,
+) -> SentimentBondResult:
+    """OLS: next-month 10Y excess return ~ sentiment/stress predictors + CP factor.
+
+    Excess return approximated as: -duration × Δyield - T-bill return.
+    Uses Newey-West standard errors. Returns current implied excess return in bp.
+    """
+    # Align to monthly
+    def _monthly(s: pd.Series) -> pd.Series:
+        return s.resample("MS").last().dropna()
+
+    y10 = _monthly(bond_yield)
+    tb = _monthly(tbill)
+
+    # Approximate monthly excess return: -(modified_duration × Δy) − r_f
+    # For 10Y UST, modified duration ≈ 8.5 years at current yields
+    DURATION_10Y = 8.5
+    delta_y = y10.diff()  # monthly change in yield (in %)
+    price_return = -DURATION_10Y * delta_y  # percentage return
+    rf = tb / 12  # monthly T-bill return (annual → monthly, in %)
+    excess_return = (price_return - rf).shift(-horizon_months)  # next month's return
+
+    # Build predictor frame
+    predictor_dict: dict[str, pd.Series] = {}
+    for label, s in sentiment_series.items():
+        predictor_dict[label] = _monthly(s)
+    if cp_factor is not None:
+        predictor_dict["CP_factor"] = _monthly(cp_factor)
+
+    if not predictor_dict:
+        return SentimentBondResult(
+            implied_excess_return_bp=float("nan"),
+            r_squared=float("nan"),
+            coefficients={},
+            t_stats={},
+            current_predictors={},
+            n_obs=0,
+            fit_ok=False,
+            error="No predictors",
+        )
+
+    pred_df = pd.DataFrame(predictor_dict)
+    aligned = pd.concat([pred_df, excess_return.rename("excess_return")], axis=1).dropna()
+
+    # Drop last horizon_months rows where future return is unknown
+    if len(aligned) > horizon_months:
+        aligned = aligned.iloc[:-horizon_months]
+
+    if len(aligned) < 36:
+        return SentimentBondResult(
+            implied_excess_return_bp=float("nan"),
+            r_squared=float("nan"),
+            coefficients={},
+            t_stats={},
+            current_predictors={},
+            n_obs=len(aligned),
+            fit_ok=False,
+            error=f"Too few obs: {len(aligned)}",
+        )
+
+    import statsmodels.api as sm
+    feat_names = list(predictor_dict.keys())
+    X = sm.add_constant(aligned[feat_names])
+    y = aligned["excess_return"]
+    try:
+        res = sm.OLS(y, X).fit(cov_type="HAC", cov_kwds={"maxlags": newey_west_lags})
+    except Exception as e:
+        return SentimentBondResult(
+            implied_excess_return_bp=float("nan"),
+            r_squared=float("nan"),
+            coefficients={},
+            t_stats={},
+            current_predictors={},
+            n_obs=len(aligned),
+            fit_ok=False,
+            error=str(e),
+        )
+
+    coefs = {n: float(res.params[n]) for n in feat_names}
+    tstats = {n: float(res.tvalues[n]) for n in feat_names}
+
+    # Current implied return: use latest predictor values
+    current_vals: dict[str, float] = {}
+    for name, s in predictor_dict.items():
+        clean = s.dropna()
+        if not clean.empty:
+            current_vals[name] = float(clean.iloc[-1])
+
+    implied = float(res.params["const"])
+    for name, val in current_vals.items():
+        implied += coefs.get(name, 0.0) * val
+
+    return SentimentBondResult(
+        implied_excess_return_bp=round(implied * 100, 1),  # % → bp
+        r_squared=float(res.rsquared),
+        coefficients={k: round(v * 100, 2) for k, v in coefs.items()},  # % → bp
+        t_stats={k: round(v, 2) for k, v in tstats.items()},
+        current_predictors=current_vals,
+        n_obs=len(aligned),
+        fit_ok=True,
+    )
+
+
 def granger_min_p(y: pd.Series, x: pd.Series, max_lag: int = 4) -> dict[int, float]:
     """Granger-causality F-test p-values for x → y at each lag up to `max_lag`.
 

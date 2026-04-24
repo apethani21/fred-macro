@@ -20,6 +20,7 @@ from src.analytics import data as D
 from src.analytics import stats as S
 
 from .config import CORE_PAIRS, NOTABLE_MOVE_WATCHLIST
+from .questions import generate_questions
 from .detectors import (
     DetectorHit,
     detect_breakeven_anomaly,
@@ -862,12 +863,26 @@ def run_scan(
     report.hits.extend(bph); report.skipped.extend(bpsk)
     append_stats("bond_predictability", bpdf); report.stats_rows_written["bond_predictability"] = len(bpdf)
 
+    log.info("scan: research questions (M4 always; M10/M11 triggered by hits)")
+    questions = generate_questions(report.hits, today)
+    q_findings: list[Finding] = []
+    for q in questions:
+        log.info("  running %s: %s", q.method_id, q.dedup_key)
+        qf, qstats = q.execute()
+        q_findings.extend(qf)
+        for stat_name, qdf in qstats.items():
+            if len(qdf):
+                append_stats(stat_name, qdf)
+                report.stats_rows_written[stat_name] = report.stats_rows_written.get(stat_name, 0) + len(qdf)
+
     # Turn hits into findings and write markdown.
     prior = existing_slugs()
     findings: list[Finding] = []
     for h in report.hits:
         f = _finding_from_hit(h, today)
         findings.append(f)
+    # Append question-driven findings (M4, M10, M11) — already fully formed.
+    findings.extend(q_findings)
     # Order highest-score first so fresh scans write the most salient ones at the top.
     findings.sort(key=lambda f: -f.score)
     added, kept = write_findings_md(findings, overwrite=overwrite_findings)

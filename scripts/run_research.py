@@ -4,6 +4,7 @@
 Common modes:
   python scripts/run_research.py
       Full scan over the curated core universe and relationship pairs.
+      Includes M4/M10/M11 question analyses automatically.
 
   python scripts/run_research.py --pairs DGS10 UNRATE
       Scan a single ad-hoc pair (takes two series IDs; label auto-generated).
@@ -21,10 +22,14 @@ Common modes:
       Enrich only a specific finding by slug substring.
 
   python scripts/run_research.py --fomc
-      Run M7 FOMC event study (timing/path decomposition, cross-asset regressions).
+      Also run M7 FOMC event study (timing/path decomposition, cross-asset regressions).
 
   python scripts/run_research.py --fomc-only
       Run FOMC event study only, skip the core pattern scan.
+
+  python scripts/run_research.py --questions-only
+      Run M4/M10/M11 question analyses only (no core pattern scan). Fast; useful for
+      getting a fresh recession probability reading without a full scan.
 """
 from __future__ import annotations
 
@@ -57,6 +62,7 @@ def main() -> int:
     parser.add_argument("--slug", help="Enrich only the finding whose slug contains this substring.")
     parser.add_argument("--fomc", action="store_true", help="Also run M7 FOMC event study.")
     parser.add_argument("--fomc-only", action="store_true", help="Run FOMC event study only (skip core scan).")
+    parser.add_argument("--questions-only", action="store_true", help="Run M4/M10/M11 question analyses only.")
     args = parser.parse_args()
 
     pairs = None
@@ -109,6 +115,28 @@ def main() -> int:
             print(f"FOMC event study: {len(fomc_findings)} finding(s) written.")
 
         if args.fomc_only:
+            build_health_snapshot()
+            return 0
+
+        if args.questions_only:
+            from src.research.questions import generate_questions, ResearchQuestion
+            from src.research.findings import append_stats, write_findings_md
+            questions = generate_questions([], today)
+            all_findings = []
+            for q in questions:
+                print(f"Running {q.method_id}: {q.dedup_key}")
+                qf, qstats = q.execute()
+                all_findings.extend(qf)
+                for stat_name, qdf in qstats.items():
+                    if len(qdf) and not args.dry_run:
+                        append_stats(stat_name, qdf)
+            if not args.dry_run:
+                added, kept = write_findings_md(all_findings)
+                print(f"Questions: {len(questions)} run, {len(all_findings)} finding(s) produced ({added} new, {kept} kept).")
+            else:
+                for f in all_findings:
+                    print(f"  [{f.kind}] {f.title}")
+            run.set("findings", len(all_findings))
             build_health_snapshot()
             return 0
 
