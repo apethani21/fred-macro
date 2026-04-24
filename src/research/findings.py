@@ -319,6 +319,8 @@ def append_stats(name: str, rows: pd.DataFrame) -> Path:
         "inflation_episodes": ["episode_idx", "run_date"],
         "breakeven_components": ["date", "tenor"],
         "bond_predictability": ["date", "run_date"],
+        "relationship_spreads": ["spread_id", "run_date"],
+        "relationship_decompositions": ["decomp_id", "component", "run_date"],
     }[name]
     combined = combined.drop_duplicates(subset=dedup_keys, keep="last").reset_index(drop=True)
     save_parquet_atomic(combined, path)
