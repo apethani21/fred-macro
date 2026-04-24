@@ -36,6 +36,9 @@ STATS_FILES = {
     "breakeven_components": STATS_DIR / "breakeven_components.parquet",
     # M3: bond return predictability / CP factor
     "bond_predictability": STATS_DIR / "bond_predictability.parquet",
+    # Relationship monitor: named spread and decomposition relationships
+    "relationship_spreads": STATS_DIR / "relationship_spreads.parquet",
+    "relationship_decompositions": STATS_DIR / "relationship_decompositions.parquet",
 }
 
 

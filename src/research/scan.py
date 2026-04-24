@@ -21,6 +21,8 @@ from src.analytics import stats as S
 
 from .config import CORE_PAIRS, NOTABLE_MOVE_WATCHLIST
 from .questions import generate_questions
+from .relationship_config import relationships_as_pairs
+from .relationship_monitor import run_relationship_monitor
 from .detectors import (
     DetectorHit,
     detect_breakeven_anomaly,
@@ -647,9 +649,10 @@ def _finding_from_hit(hit: DetectorHit, today: date) -> Finding:
     elif hit.kind == "structural_break":
         ev = hit.evidence
         is_corr = ev.get("is_correlation", False)
+        is_spread = ev.get("is_spread", False)
         a_id = ev.get("series_a") or ev["series_id"]
         b_id = ev.get("series_b")
-        label = ev.get("label", ev["series_id"])
+        label = ev.get("name") or ev.get("label", ev["series_id"])
         break_dates_str = ", ".join(ev["break_dates"])
         last_mean = ev["last_regime_mean"]
         prior_mean = ev["prior_regime_mean"]
@@ -674,6 +677,27 @@ def _finding_from_hit(hit: DetectorHit, today: date) -> Finding:
                 f"Mean correlation shifted from {prior_mean:+.2f} (prior regime) to "
                 f"{last_mean:+.2f} (current regime), a change of {shift:+.2f}. "
                 f"Regimes: {regime_lines}."
+            )
+        elif is_spread:
+            sid_a_raw = hit.series_ids[0] if len(hit.series_ids) > 0 else a_id
+            sid_b_raw = hit.series_ids[1] if len(hit.series_ids) > 1 else "?"
+            title = (
+                f"{label} ({sid_a_raw}−{sid_b_raw}): spread structural break at {most_recent} "
+                f"(mean shift {prior_mean:+.4g} → {last_mean:+.4g})"
+            )
+            slug = make_slug("structural_break_spread", (sid_a_raw, sid_b_raw))
+            regime_lines = "; ".join(
+                f"regime {r['regime']}: {r['start'][:7]}–{r['end'][:7]}, mean={r['mean']:.4g}"
+                for r in ev["regime_stats"]
+            )
+            claim = (
+                f"Bai-Perron (Dynp, l2 cost, BIC-selected) finds {n_breaks} structural break(s) "
+                f"in the derived spread {label} ({sid_a_raw} minus {sid_b_raw}). "
+                f"Break date(s): {break_dates_str}. "
+                f"Spread mean shifted from {prior_mean:.4g} (prior regime) to "
+                f"{last_mean:.4g} (current regime), shift {shift:+.4g}. "
+                f"Regimes: {regime_lines}. "
+                f"Basis: {ev.get('basis', '')}."
             )
         else:
             sid = ev["series_id"]
@@ -778,6 +802,43 @@ def _finding_from_hit(hit: DetectorHit, today: date) -> Finding:
             f"High CP factor historically predicts high 1-year excess Treasury returns "
             f"(Cochrane & Piazzesi 2005, AER 95(1)).{r2_str}"
         )
+    elif hit.kind == "spread_extreme":
+        sid_a, sid_b = hit.series_ids[:2]
+        name = ev.get("name", f"{sid_a}−{sid_b}")
+        pct = ev["percentile"]
+        val = ev["latest_value"]
+        title = f"{name}: spread at {pct:.1%} of full history ({val:+.3g})"
+        slug = make_slug("spread_extreme", (sid_a, sid_b), extra=ev["latest_date"])
+        claim = (
+            f"The derived spread {name} ({sid_a} minus {sid_b}) stands at {val:+.4g} "
+            f"as of {ev['latest_date']}, ranking at the {pct:.1%} of its "
+            f"{ev['n']}-observation history "
+            f"(min {ev['full_min']:+.4g}, median {ev['full_median']:+.4g}, "
+            f"max {ev['full_max']:+.4g}). "
+            f"Theoretical basis: {ev.get('basis', '')}."
+        )
+    elif hit.kind == "decomposition_shift":
+        total = ev["total_series"]
+        comp = ev["component"]
+        hist_share = ev["hist_share"]
+        recent_share = ev["recent_share"]
+        shift = ev["share_shift"]
+        direction = ev["direction"]
+        name = ev.get("name", f"{total} decomposition")
+        title = (
+            f"{name}: {comp} contribution {direction} "
+            f"({hist_share:.0%} → {recent_share:.0%} of {total} moves)"
+        )
+        slug = make_slug("decomposition_shift", (total, comp))
+        claim = (
+            f"In the recent {ev['recent_obs']} observations, {comp} accounted for "
+            f"{recent_share:.0%} of {total} moves (signed contribution share), "
+            f"vs a historical mean of {hist_share:.0%} over {ev['hist_obs']} prior observations "
+            f"(shift: {shift:+.0%}). "
+            f"This indicates the recent {total} move has been disproportionately "
+            f"{'driven by' if shift > 0 else 'suppressed relative to'} {comp}. "
+            f"Theoretical basis: {ev.get('basis', '')}."
+        )
     else:
         title = f"Unknown hit kind: {hit.kind}"
         slug = make_slug(hit.kind, hit.series_ids)
@@ -809,9 +870,11 @@ def run_scan(
     notable_watchlist: Iterable[str] | None = None,
     today: date | None = None,
     overwrite_findings: bool = False,
+    skip_relationships: bool = False,
 ) -> ScanReport:
     """Run every detector, persist stats and findings. Returns a report."""
-    pairs = list(pairs) if pairs is not None else list(CORE_PAIRS)
+    # Default to RELATIONSHIPS-derived pairs (superset of old CORE_PAIRS).
+    pairs = list(pairs) if pairs is not None else relationships_as_pairs(kinds=("correlation", "lead_lag"))
     notable_watchlist = list(notable_watchlist) if notable_watchlist is not None else list(NOTABLE_MOVE_WATCHLIST)
     today = today or date.today()
     report = ScanReport()
@@ -862,6 +925,16 @@ def run_scan(
     bph, bpdf, bpsk = scan_bond_predictability()
     report.hits.extend(bph); report.skipped.extend(bpsk)
     append_stats("bond_predictability", bpdf); report.stats_rows_written["bond_predictability"] = len(bpdf)
+
+    if not skip_relationships:
+        log.info("scan: relationship monitor (spread + decomposition)")
+        rh, rsk, rstats = run_relationship_monitor(today=today)
+        report.hits.extend(rh)
+        report.skipped.extend(rsk)
+        for stat_name, rdf in rstats.items():
+            if len(rdf):
+                append_stats(stat_name, rdf)
+                report.stats_rows_written[stat_name] = len(rdf)
 
     log.info("scan: research questions (M4 always; M10/M11 triggered by hits)")
     questions = generate_questions(report.hits, today)

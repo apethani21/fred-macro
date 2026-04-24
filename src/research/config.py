@@ -32,22 +32,13 @@ def core_series() -> list[str]:
     return [sid for group in CORE_UNIVERSE.values() for sid in group]
 
 
-# Relationship pairs worth watching every scan. Chosen for documented macro
-# meaning (not casual correlation). Each entry: (a, b, human label).
-# Rolling / lead-lag / stability scans run on these pairs.
-CORE_PAIRS: tuple[tuple[str, str, str], ...] = (
-    ("DGS10", "UNRATE", "10y yield vs unemployment"),
-    ("T10Y2Y", "UNRATE", "2s10s slope vs unemployment"),
-    ("T10Y3M", "UNRATE", "3m-10y slope vs unemployment"),
-    ("DGS10", "CPIAUCSL", "10y yield vs headline CPI level"),
-    ("DGS10", "PCEPILFE", "10y yield vs core PCE level"),
-    ("DFII10", "SP500", "10y real yield vs S&P 500"),
-    ("VIXCLS", "BAMLH0A0HYM2", "VIX vs HY credit spreads"),
-    ("DGS10", "DTWEXBGS", "10y yield vs broad dollar index"),
-    ("DCOILWTICO", "T10YIE", "WTI crude vs 10y breakeven"),
-    ("FEDFUNDS", "UNRATE", "Fed funds vs unemployment"),
-    ("PAYEMS", "INDPRO", "Nonfarm payrolls vs industrial production"),
-    ("UMCSENT", "RRSFS", "Consumer sentiment vs retail sales"),
+# CORE_PAIRS is kept for backward compatibility but RELATIONSHIPS (in relationship_config.py)
+# is the single source of truth. run_scan() defaults to RELATIONSHIPS-derived pairs.
+# Any new pairs should be added to RELATIONSHIPS, not here.
+from .relationship_config import relationships_as_pairs as _rel_pairs
+
+CORE_PAIRS: tuple[tuple[str, str, str], ...] = tuple(
+    _rel_pairs(kinds=("correlation", "lead_lag"))
 )
 
 

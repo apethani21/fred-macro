@@ -30,6 +30,10 @@ Common modes:
   python scripts/run_research.py --questions-only
       Run M4/M10/M11 question analyses only (no core pattern scan). Fast; useful for
       getting a fresh recession probability reading without a full scan.
+
+  python scripts/run_research.py --relationships-only
+      Run spread + decomposition relationship monitors only. Fast check of named
+      macro relationships without running the full series-level scan.
 """
 from __future__ import annotations
 
@@ -63,6 +67,7 @@ def main() -> int:
     parser.add_argument("--fomc", action="store_true", help="Also run M7 FOMC event study.")
     parser.add_argument("--fomc-only", action="store_true", help="Run FOMC event study only (skip core scan).")
     parser.add_argument("--questions-only", action="store_true", help="Run M4/M10/M11 question analyses only.")
+    parser.add_argument("--relationships-only", action="store_true", help="Run spread + decomposition relationship monitors only.")
     args = parser.parse_args()
 
     pairs = None
@@ -115,6 +120,29 @@ def main() -> int:
             print(f"FOMC event study: {len(fomc_findings)} finding(s) written.")
 
         if args.fomc_only:
+            build_health_snapshot()
+            return 0
+
+        if args.relationships_only:
+            from src.research.relationship_monitor import run_relationship_monitor
+            from src.research.findings import append_stats, write_findings_md
+            from src.research.scan import _finding_from_hit
+            rh, rsk, rstats = run_relationship_monitor(today=today)
+            for stat_name, rdf in rstats.items():
+                if len(rdf) and not args.dry_run:
+                    append_stats(stat_name, rdf)
+            findings = [_finding_from_hit(h, today) for h in rh]
+            findings.sort(key=lambda f: -f.score)
+            if not args.dry_run:
+                added, kept = write_findings_md(findings, overwrite=args.overwrite)
+                print(f"Relationships: {len(rh)} hits, {len(findings)} findings ({added} new, {kept} kept).")
+                if rsk:
+                    print(f"Skipped: {len(rsk)} (first 5: {rsk[:5]})")
+            else:
+                for f in findings:
+                    print(f"  [{f.kind}] {f.title}")
+            run.set("hits", len(rh))
+            run.set("findings", len(findings))
             build_health_snapshot()
             return 0
 
