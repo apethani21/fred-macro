@@ -32,6 +32,39 @@ _KIND_PRIORITY: dict[str, int] = {
     "notable_move_change": 5,
 }
 
+# Release name substrings that identify genuine discrete scheduled events.
+# Continuous daily FRED feeds (H.15, Federal Funds Data, SOFR, etc.) are
+# excluded so they don't anchor the email hook every single day.
+_HOOKABLE_RELEASE_KEYWORDS: tuple[str, ...] = (
+    "employment situation",
+    "consumer price",
+    "personal income",
+    "gross domestic product",
+    "retail sales",
+    "industrial production",
+    "job openings",
+    "federal open market",
+    "fomc",
+    "producer price",
+    "housing starts",
+    "durable goods",
+    "trade balance",
+    "consumer confidence",
+    "consumer sentiment",
+    "surveys of consumers",
+    "ism manufacturing",
+    "ism services",
+    "purchasing managers",
+    "beige book",
+    "import price",
+    "existing home sales",
+    "new home sales",
+    "advance retail",
+    "jolts",
+    "nonfarm payroll",
+    "unemployment insurance weekly claims",
+)
+
 
 @dataclass
 class LessonPick:
@@ -51,10 +84,24 @@ def pick_lesson(today: date | None = None, lookback_days: int = 14) -> LessonPic
     if not all_findings:
         raise ValueError("findings.md is empty. Run scripts/run_research.py first.")
 
-    recent_slugs = _load_recent_slugs(lookback_days)
+    recent_slugs, recent_series = _load_recent_history(lookback_days)
 
-    eligible = [f for f in all_findings if f.status == "new" and f.slug not in recent_slugs]
+    # Slug-level dedup: exclude recently-taught slugs.
+    # Series-level dedup: also exclude findings whose primary series was taught
+    # recently, regardless of slug (catches dated slugs like notable_move_level
+    # that change every scan but refer to the same underlying series).
+    def _is_eligible(f: Finding) -> bool:
+        if f.slug in recent_slugs:
+            return False
+        if any(s in recent_series for s in f.series_ids):
+            return False
+        return True
+
+    eligible = [f for f in all_findings if f.status == "new" and _is_eligible(f)]
     if not eligible:
+        eligible = [f for f in all_findings if _is_eligible(f)]
+    if not eligible:
+        # Fall back to slug-only dedup (drop series-level constraint).
         eligible = [f for f in all_findings if f.slug not in recent_slugs]
     if not eligible:
         logger.warning("All findings recently taught; ignoring lookback filter.")
@@ -93,16 +140,19 @@ def record_lesson_sent(finding: Finding, today: date | None = None) -> None:
         "slug": finding.slug,
         "title": finding.title,
         "kind": finding.kind,
+        "series_ids": list(finding.series_ids),
     }
     with LESSON_HISTORY_PATH.open("a") as fh:
         fh.write(json.dumps(entry) + "\n")
 
 
-def _load_recent_slugs(days: int) -> set[str]:
+def _load_recent_history(days: int) -> tuple[set[str], set[str]]:
+    """Return (recent_slugs, recent_series_ids) within the lookback window."""
     if not LESSON_HISTORY_PATH.exists():
-        return set()
+        return set(), set()
     cutoff = (date.today() - timedelta(days=days)).isoformat()
     slugs: set[str] = set()
+    series: set[str] = set()
     for line in LESSON_HISTORY_PATH.read_text().splitlines():
         line = line.strip()
         if not line:
@@ -111,9 +161,10 @@ def _load_recent_slugs(days: int) -> set[str]:
             entry = json.loads(line)
             if entry.get("date", "") >= cutoff:
                 slugs.add(entry["slug"])
+                series.update(entry.get("series_ids", []))
         except (json.JSONDecodeError, KeyError):
             pass
-    return slugs
+    return slugs, series
 
 
 def _rank(findings: list[Finding]) -> list[Finding]:
@@ -123,6 +174,11 @@ def _rank(findings: list[Finding]) -> list[Finding]:
 
 
 def _upcoming_releases(today: date, days_ahead: int = 2) -> list[dict]:
+    """Return hookable discrete scheduled releases in the next `days_ahead` days.
+
+    Continuous daily FRED feeds (H.15, Federal Funds Data, SOFR, etc.) are
+    excluded via _HOOKABLE_RELEASE_KEYWORDS so they don't dominate the hook.
+    """
     cal = load_parquet(RELEASE_CALENDAR_PATH)
     if cal is None:
         return []
@@ -131,6 +187,12 @@ def _upcoming_releases(today: date, days_ahead: int = 2) -> list[dict]:
     hi = pd.Timestamp(today + timedelta(days=days_ahead))
     mask = (cal["release_date"] >= lo) & (cal["release_date"] <= hi)
     subset = cal[mask].drop_duplicates("release_name")
+
+    def _is_hookable(name: str) -> bool:
+        name_lower = name.lower()
+        return any(kw in name_lower for kw in _HOOKABLE_RELEASE_KEYWORDS)
+
+    subset = subset[subset["release_name"].apply(_is_hookable)]
     rows = subset[["release_id", "release_name", "release_date"]].copy()
     rows["release_date"] = rows["release_date"].dt.strftime("%Y-%m-%d")
     return rows.to_dict("records")

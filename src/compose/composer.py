@@ -1410,7 +1410,7 @@ def _scale_evidence_correlations(evidence: dict) -> dict:
 
 
 def _finding_to_dict(f: Finding) -> dict:
-    evidence = _scale_evidence_correlations(f.evidence) if f.evidence else f.evidence
+    evidence = _scale_evidence_correlations(f.evidence) if isinstance(f.evidence, dict) else f.evidence
     d = {
         "slug": f.slug,
         "title": f.title,
