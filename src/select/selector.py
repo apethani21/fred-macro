@@ -63,6 +63,11 @@ _HOOKABLE_RELEASE_KEYWORDS: tuple[str, ...] = (
     "jolts",
     "nonfarm payroll",
     "unemployment insurance weekly claims",
+    # ECB / euro area
+    "ecb governing council",
+    "eurostat flash hicp",
+    "eurostat hicp",
+    "flash hicp",
 )
 
 

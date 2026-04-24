@@ -54,12 +54,16 @@ _SNAPSHOT_SERIES: list = [
     ("DFII10",  "10Y Real",    "rate_pct"),
     ("T10YIE",  "10Y BEI",     "rate_pct"),
     ("T5YIFR",  "5Y5Y fwd",    "rate_pct"),
+    ("__section__", "ECB POLICY"),
+    ("ECB.DFR",          "ECB DFR",      "rate_pct"),
+    ("ECB.ESTR",         "€STR",         "rate_pct"),
     ("__section__", "EUROPEAN RATES"),
-    ("IRLTLT01DEM156N", "Germany 10Y",  "rate_pct"),
-    ("IRLTLT01ITM156N", "Italy 10Y",    "rate_pct"),
-    ("IRLTLT01FRM156N", "France 10Y",   "rate_pct"),
-    ("IRLTLT01GBM156N", "UK 10Y",       "rate_pct"),
-    ("IRLTLT01EZM156N", "Euro Area 10Y","rate_pct"),
+    ("ECB.YC.AAA.2Y",    "EA AAA 2Y",   "rate_pct"),
+    ("ECB.YC.AAA.10Y",   "EA AAA 10Y",  "rate_pct"),
+    ("ECB.BUND.SLOPE",   "Bund slope",  "spread_bp"),
+    ("ECB.BTPBUND.SPREAD","BTP-Bund",   "spread_bp"),
+    ("IRLTLT01FRM156N",  "France 10Y",  "rate_pct"),
+    ("IRLTLT01GBM156N",  "UK 10Y",      "rate_pct"),
     ("__section__", "CREDIT"),
     ("BAMLC0A0CM",   "IG OAS",  "spread_bp"),
     ("BAMLH0A0HYM2", "HY OAS",  "spread_bp"),
@@ -79,8 +83,10 @@ _SNAPSHOT_GLOSSARY = (
     "BEI = breakeven inflation · OAS = option-adjusted spread · "
     "2s10s = 10Y−2Y spread · 3M10Y = 10Y−3M spread · "
     "Real = TIPS yield · 5Y5Y fwd = 5Y-5Y forward inflation · "
-    "IG/HY = investment/high-yield grade · DFR = deposit facility rate · "
-    "USD broad = trade-weighted dollar"
+    "IG/HY = investment/high-yield grade · "
+    "DFR = ECB deposit facility rate · €STR = euro short-term rate (ECB overnight) · "
+    "EA AAA = euro-area AAA sovereign yield curve · BTP-Bund = Italy−Germany 10Y spread · "
+    "Bund slope = EA AAA 10Y−2Y · USD broad = trade-weighted dollar"
 )
 
 
@@ -291,6 +297,11 @@ _RELEASE_EQUITY: list[tuple[str, str, str]] = [
     ("s&p/case-shiller",        "Case-Shiller",     "Home price appreciation; feeds OER component of CPI with a 12–18 month lag."),
     ("existing home sales",     "Existing Home",    "Demand side of housing; lock-in effect depresses turnover when mortgage rates are high."),
     ("new home sales",          "New Home Sales",   "Builder activity proxy; more timely than existing sales for construction demand."),
+    # ECB / euro area
+    ("ecb governing council",   "ECB Decision",     "Rate decision + forward guidance; EUR/USD and European bank equities are the primary movers."),
+    ("eurostat flash hicp",     "EA HICP Flash",    "EA inflation print; drives ECB rate path expectations and EUR-denominated asset repricing."),
+    ("eurostat hicp",           "EA HICP",          "EA inflation print; drives ECB rate path expectations and EUR-denominated asset repricing."),
+    ("flash hicp",              "EA HICP Flash",    "EA inflation print; drives ECB rate path expectations and EUR-denominated asset repricing."),
 ]
 
 
@@ -571,7 +582,7 @@ PROSE RULES:
 - No hedging-as-authority: "Many economists believe" is banned. Cite a specific economist/paper/institution or drop the claim.
 - No platitudes at the close: "Only time will tell," "Markets will be watching" — banned.
 - Every number has context (comparison to prior, expectation, historical reference, or threshold).
-- Do NOT include FRED series IDs in prose (e.g. "VIXCLS", "DGS10", "UNRATE"). They are internal identifiers. Refer to series by their full name only.
+- Do NOT include FRED or ECB series IDs in prose (e.g. "VIXCLS", "DGS10", "UNRATE", "ECB.DFR", "ECB.BTPBUND.SPREAD"). They are internal identifiers. Refer to series by their full descriptive name only (e.g. "ECB deposit facility rate" not "ECB.DFR"; "BTP-Bund spread" not "ECB.BTPBUND.SPREAD").
 - Use '%ile' not 'percentile': e.g., '52nd %ile' not '52nd percentile'.
 - In tables, use short lookback labels: 'Full', '5Y', '10Y' — not '5-Year', 'Full History', etc.
 - All standard-deviation citations: 1 decimal, bold: '<strong>−0.2σ</strong>'. Never '−0.20σ'.
@@ -608,7 +619,7 @@ Check for:
 3. Banned closers: "Only time will tell", "Markets will be watching", "it remains to be seen", "we shall see"
 4. Throat-clearing opener: first sentence contains no information, only setup
 5. Focus drift: draft covers more than one organizing idea
-6. FRED series IDs appearing in prose (e.g., "VIXCLS", "DGS10", "UNRATE" — series codes must not appear in the email body, including inside h3 headers)
+6. FRED or ECB series IDs appearing in prose (e.g., "VIXCLS", "DGS10", "UNRATE", "ECB.DFR", "ECB.BTPBUND.SPREAD" — series codes must not appear in the email body, including inside h3 headers)
 7. "percentile" spelled out in full — must be "%ile"
 8. Unsupported historical claims: a claim about a specific historical event with no source in the finding's Sources list or CONCEPT CONTEXT
 9. σ citations with more than 1 decimal place (e.g., "−0.20σ" should be "−0.2σ")

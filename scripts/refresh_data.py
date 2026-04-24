@@ -34,6 +34,7 @@ import pandas as pd
 
 from src.ingest.discovery import DiscoveryConfig, discover, universe_by_frequency
 from src.ingest.ecb_client import EcbClient
+from src.ingest.ecb_release_calendar import refresh_ecb_calendar
 from src.ingest.ecb_update import run_ecb_refresh
 from src.ingest.fred_client import FredClient
 from src.ingest.paths import DISCOVERY_PATH, METADATA_PATH
@@ -111,6 +112,9 @@ def main() -> int:
                 refresh_release_series(client, release_ids)
             run.set("calendar_updated", True)
             run.set("release_count", len(release_ids))
+
+        # Always merge static ECB/Eurostat calendar dates (fast, no network call).
+        refresh_ecb_calendar()
 
         # --- determine universe ---
         if args.series:
