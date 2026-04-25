@@ -692,6 +692,12 @@ def scan_cross_asset_factors() -> tuple[list[DetectorHit], pd.DataFrame, list[tu
     payems  = _monthly_end("PAYEMS")
     hy      = _monthly_end("BAMLH0A0HYM2")
     dfii10  = _monthly_end("DFII10")
+    # BAA10Y is FRED's "Moody's Baa Corporate Yield Relative to 10Y Treasury" — already a spread.
+    # Used for credit_stress factor in place of BAMLH0A0HYM2, which only has FRED history from
+    # April 2023 due to ICE BofA licensing changes. BAA10Y goes back to 1986.
+    baa10y  = _monthly_end("BAA10Y")
+
+    _MIN_OBS = 36  # must match min_obs passed to fama_macbeth_factor_model below
 
     factor_series: dict[str, pd.Series] = {}
     if cpi is not None and len(cpi) > 24:
@@ -705,8 +711,8 @@ def scan_cross_asset_factors() -> tuple[list[DetectorHit], pd.DataFrame, list[tu
         factor_series["growth_surprise"] = (
             chg - chg.rolling(12, min_periods=6).mean()
         ).dropna()
-    if hy is not None and len(hy) > 24:
-        factor_series["credit_stress"] = hy.diff().dropna()
+    if baa10y is not None and len(baa10y) > 24:
+        factor_series["credit_stress"] = baa10y.diff().dropna()
     if dfii10 is not None and len(dfii10) > 24:
         factor_series["real_rate_chg"] = dfii10.diff().dropna()
 
@@ -735,12 +741,15 @@ def scan_cross_asset_factors() -> tuple[list[DetectorHit], pd.DataFrame, list[tu
     if dgs30 is not None and len(dgs30) > 24:
         asset_series["treasury_30y"] = (-18.0 * dgs30.diff()).dropna()
 
-    if hy is not None and len(hy) > 24:
+    # ICE BofA series (BAMLH0A0HYM2, BAMLC0A0CM) only have FRED history from April 2023.
+    # Require _MIN_OBS + 2 months before including them as assets so they don't constrain
+    # the effective aligned sample below the model floor. They rejoin once history is long enough.
+    if hy is not None and len(hy) > _MIN_OBS + 2:
         # HY spread duration approx 4y: return ≈ -4 × Δspread
         asset_series["hy_credit"] = (-4.0 * hy.diff()).dropna()
 
     ig = _monthly_end("BAMLC0A0CM")
-    if ig is not None and len(ig) > 24:
+    if ig is not None and len(ig) > _MIN_OBS + 2:
         asset_series["ig_credit"] = (-7.0 * ig.diff()).dropna()
 
     wti = _monthly_end("DCOILWTICO")
@@ -785,7 +794,7 @@ def scan_cross_asset_factors() -> tuple[list[DetectorHit], pd.DataFrame, list[tu
         max_t = max(abs(result.t_stats_shanken.get(f, 0.0)) for f in sig_factors)
         hits.append(DetectorHit(
             kind="cross_asset_factor",
-            series_ids=("CPIAUCSL", "PAYEMS", "BAMLH0A0HYM2", "DFII10", "SP500", "DGS10"),
+            series_ids=("CPIAUCSL", "PAYEMS", "BAA10Y", "DFII10", "SP500", "DGS10"),
             window=f"full history ({result.n_obs} months)",
             score=min(max_t / 4.0, 1.0),
             evidence={
