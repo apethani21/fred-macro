@@ -756,7 +756,7 @@ def scan_cross_asset_factors() -> tuple[list[DetectorHit], pd.DataFrame, list[tu
         return hits, pd.DataFrame(), skipped
 
     returns_df = pd.DataFrame(asset_series).dropna()
-    result = fama_macbeth_factor_model(returns_df, factors_df)
+    result = fama_macbeth_factor_model(returns_df, factors_df, min_obs=36)
 
     if not result.fit_ok:
         skipped.append(("cross_asset_factors", result.error))

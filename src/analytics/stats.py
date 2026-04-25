@@ -852,6 +852,7 @@ def fama_macbeth_factor_model(
     `returns`  — DataFrame, columns = asset names, monthly % returns.
     `factors`  — DataFrame, columns = factor names, monthly shock values.
     Both are aligned on a common date index before estimation.
+    min_obs=36 is the practical floor; reliability improves substantially above 120 months.
 
     References: Fama & MacBeth (1973), Shanken (1992 JF).
     """
