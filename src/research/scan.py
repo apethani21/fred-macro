@@ -626,7 +626,7 @@ def scan_ns_factors() -> tuple[list[DetectorHit], pd.DataFrame, list[tuple[str, 
         hits.append(DetectorHit(
             kind="ns_factor_extreme",
             series_ids=series_ids,
-            label=f"NS yield curve factors at historical extreme: {label}",
+            window=f"full history ({snap.history_n} months)",
             score=min(score / 3.0, 1.0),
             evidence={
                 "level": round(snap.level, 4),
@@ -657,6 +657,157 @@ def scan_ns_factors() -> tuple[list[DetectorHit], pd.DataFrame, list[tuple[str, 
     stats_df = pd.DataFrame(rows) if rows else pd.DataFrame(
         columns=["date", "level", "slope", "curvature", "fit_rmse_bps", "run_date"]
     )
+    return hits, stats_df, skipped
+
+
+# -------------------------------------------------------------------------
+# M12: Cross-asset factor model (Fama-MacBeth two-pass CSR)
+# -------------------------------------------------------------------------
+
+def scan_cross_asset_factors() -> tuple[list[DetectorHit], pd.DataFrame, list[tuple[str, str]]]:
+    """Fama-MacBeth two-pass cross-sectional regression across 8 asset classes.
+
+    Factors: inflation surprise, growth surprise, credit stress (HY spread chg),
+    real rate change. Assets: equities, 2Y/10Y/30Y Treasuries, HY credit, IG
+    credit, WTI crude, gold. Fires when any Shanken-corrected |t| >= 2.0.
+    """
+    import numpy as _np
+    from src.analytics.stats import fama_macbeth_factor_model
+
+    hits: list[DetectorHit] = []
+    skipped: list[tuple[str, str]] = []
+    rows: list[dict] = []
+    today_str = date.today().isoformat()
+
+    def _monthly_end(sid: str) -> "pd.Series | None":
+        try:
+            s = D.load_series(sid).dropna()
+            return s.resample("ME").last().dropna()
+        except (FileNotFoundError, KeyError) as exc:
+            skipped.append((sid, f"load: {exc}"))
+            return None
+
+    # --- Build factor shocks ---
+    cpi     = _monthly_end("CPIAUCSL")
+    payems  = _monthly_end("PAYEMS")
+    hy      = _monthly_end("BAMLH0A0HYM2")
+    dfii10  = _monthly_end("DFII10")
+
+    factor_series: dict[str, pd.Series] = {}
+    if cpi is not None and len(cpi) > 24:
+        chg = cpi.pct_change() * 100
+        factor_series["inflation_surprise"] = (
+            chg - chg.rolling(12, min_periods=6).mean()
+        ).dropna()
+    if payems is not None and len(payems) > 24:
+        # Use % MoM change to keep growth factor on the same pp/% scale as other factors.
+        chg = payems.pct_change() * 100
+        factor_series["growth_surprise"] = (
+            chg - chg.rolling(12, min_periods=6).mean()
+        ).dropna()
+    if hy is not None and len(hy) > 24:
+        factor_series["credit_stress"] = hy.diff().dropna()
+    if dfii10 is not None and len(dfii10) > 24:
+        factor_series["real_rate_chg"] = dfii10.diff().dropna()
+
+    if len(factor_series) < 2:
+        skipped.append(("cross_asset_factors", f"too few factors available: {list(factor_series)}"))
+        return hits, pd.DataFrame(), skipped
+
+    factors_df = pd.DataFrame(factor_series).dropna()
+
+    # --- Build asset returns (% per month) ---
+    asset_series: dict[str, pd.Series] = {}
+
+    sp500 = _monthly_end("SP500")
+    if sp500 is not None and len(sp500) > 24 and (sp500 > 0).all():
+        asset_series["equities"] = (_np.log(sp500 / sp500.shift(1)) * 100).dropna()
+
+    dgs2 = _monthly_end("DGS2")
+    if dgs2 is not None and len(dgs2) > 24:
+        asset_series["treasury_2y"] = (-1.9 * dgs2.diff()).dropna()
+
+    dgs10 = _monthly_end("DGS10")
+    if dgs10 is not None and len(dgs10) > 24:
+        asset_series["treasury_10y"] = (-8.5 * dgs10.diff()).dropna()
+
+    dgs30 = _monthly_end("DGS30")
+    if dgs30 is not None and len(dgs30) > 24:
+        asset_series["treasury_30y"] = (-18.0 * dgs30.diff()).dropna()
+
+    if hy is not None and len(hy) > 24:
+        # HY spread duration approx 4y: return ≈ -4 × Δspread
+        asset_series["hy_credit"] = (-4.0 * hy.diff()).dropna()
+
+    ig = _monthly_end("BAMLC0A0CM")
+    if ig is not None and len(ig) > 24:
+        asset_series["ig_credit"] = (-7.0 * ig.diff()).dropna()
+
+    wti = _monthly_end("DCOILWTICO")
+    if wti is not None and len(wti) > 24 and (wti > 0).all():
+        asset_series["crude_oil"] = (_np.log(wti / wti.shift(1)) * 100).dropna()
+
+    gold = _monthly_end("GOLDAMGBD228NLBM")
+    if gold is not None and len(gold) > 24 and (gold > 0).all():
+        asset_series["gold"] = (_np.log(gold / gold.shift(1)) * 100).dropna()
+
+    if len(asset_series) < 4:
+        skipped.append(("cross_asset_factors", f"too few assets: {list(asset_series)}"))
+        return hits, pd.DataFrame(), skipped
+
+    returns_df = pd.DataFrame(asset_series).dropna()
+    result = fama_macbeth_factor_model(returns_df, factors_df)
+
+    if not result.fit_ok:
+        skipped.append(("cross_asset_factors", result.error))
+        return hits, pd.DataFrame(), skipped
+
+    # Persist all factor premia regardless of significance
+    for f in result.factor_names:
+        rows.append({
+            "factor_name": f,
+            "premium_pct_monthly": result.factor_premia_pct_monthly.get(f, float("nan")),
+            "t_stat_ols": result.t_stats_ols.get(f, float("nan")),
+            "t_stat_shanken": result.t_stats_shanken.get(f, float("nan")),
+            "shanken_c": result.shanken_c,
+            "r_squared_xsec": result.r_squared_xsec,
+            "n_assets": result.n_assets,
+            "n_obs": result.n_obs,
+            "run_date": today_str,
+        })
+
+    sig_factors = [
+        f for f in result.factor_names
+        if abs(result.t_stats_shanken.get(f, 0.0)) >= 2.0
+    ]
+
+    if sig_factors:
+        max_t = max(abs(result.t_stats_shanken.get(f, 0.0)) for f in sig_factors)
+        hits.append(DetectorHit(
+            kind="cross_asset_factor",
+            series_ids=("CPIAUCSL", "PAYEMS", "BAMLH0A0HYM2", "DFII10", "SP500", "DGS10"),
+            window=f"full history ({result.n_obs} months)",
+            score=min(max_t / 4.0, 1.0),
+            evidence={
+                "factor_names": result.factor_names,
+                "factor_premia_pct_monthly": result.factor_premia_pct_monthly,
+                "t_stats_ols": result.t_stats_ols,
+                "t_stats_shanken": result.t_stats_shanken,
+                "shanken_c": result.shanken_c,
+                "r_squared_xsec": result.r_squared_xsec,
+                "n_assets": result.n_assets,
+                "n_obs": result.n_obs,
+                "significant_factors": sig_factors,
+                "asset_betas": result.asset_betas,
+                "asset_avg_returns_pct_ann": result.asset_avg_returns_pct_ann,
+            },
+            tags=("cross_asset", "macro", "factor_model"),
+        ))
+
+    stats_df = pd.DataFrame(rows) if rows else pd.DataFrame(columns=[
+        "factor_name", "premium_pct_monthly", "t_stat_ols", "t_stat_shanken",
+        "shanken_c", "r_squared_xsec", "n_assets", "n_obs", "run_date",
+    ])
     return hits, stats_df, skipped
 
 
@@ -798,6 +949,7 @@ _KIND_ANCHORS: dict[str, list[str]] = {
     "btp_bund_regime":      ["btp-bund", "fragmentation", "sovereign", "ecb"],
     "decomposition_shift":  ["decomposition", "component", "contribution"],
     "ns_factor_extreme":    ["nelson-siegel", "yield curve", "level", "slope", "curvature", "term structure"],
+    "cross_asset_factor":   ["macro factor", "cross-asset", "risk premia", "fama-macbeth", "factor model"],
 }
 
 
@@ -1171,6 +1323,37 @@ def _finding_from_hit(hit: DetectorHit, today: date) -> Finding:
             f"z-scores: level {ev['level_z']:+.2f}, slope {ev['slope_z']:+.2f}, "
             f"curvature {ev['curvature_z']:+.2f}."
         )
+    elif hit.kind == "cross_asset_factor":
+        sig = ev["significant_factors"]
+        n_assets = ev["n_assets"]
+        n_obs = ev["n_obs"]
+        c = ev["shanken_c"]
+        r2 = ev["r_squared_xsec"]
+        # Most significant factor by |Shanken t|
+        max_f = max(sig, key=lambda f: abs(ev["t_stats_shanken"].get(f, 0.0)))
+        max_prem = ev["factor_premia_pct_monthly"].get(max_f, 0.0)
+        max_t_s = ev["t_stats_shanken"].get(max_f, 0.0)
+        title = (
+            f"Cross-asset factor model ({n_assets} assets, {n_obs}m): "
+            f"{len(sig)} macro factor(s) significantly priced (Shanken)"
+        )
+        slug = make_slug("cross_asset_factor", hit.series_ids)
+        prem_desc = "; ".join(
+            f"{f}={ev['factor_premia_pct_monthly'].get(f, 0.0):+.3f}%/mo "
+            f"(t_S={ev['t_stats_shanken'].get(f, 0.0):+.2f})"
+            for f in sig
+        )
+        claim = (
+            f"Fama-MacBeth two-pass cross-sectional regression ({n_obs} months, {n_assets} assets: "
+            f"equities, 2Y/10Y/30Y Treasuries, HY/IG credit, WTI, gold) finds {len(sig)} "
+            f"statistically significant macro factor premium(s) with Shanken (1992) EIV correction "
+            f"(c={c:.2f}): {prem_desc}. "
+            f"Cross-sectional R² = {r2:.1%}. "
+            f"Dominant factor: {max_f} at {max_prem:+.3f}%/month "
+            f"({max_prem * 12 * 100:+.0f}bp/year), Shanken t = {max_t_s:+.2f}. "
+            f"Factors: inflation surprise (CPI MoM demeaned), growth surprise (PAYEMS MoM demeaned), "
+            f"credit stress (HY OAS monthly change), real rate change (DFII10 monthly change)."
+        )
     else:
         title = f"Unknown hit kind: {hit.kind}"
         slug = make_slug(hit.kind, hit.series_ids)
@@ -1263,6 +1446,11 @@ def run_scan(
     nsh, nsdf, nssk = scan_ns_factors()
     report.hits.extend(nsh); report.skipped.extend(nssk)
     append_stats("ns_factors", nsdf); report.stats_rows_written["ns_factors"] = len(nsdf)
+
+    log.info("scan: cross-asset factor model (M12)")
+    cah, cadf, cask = scan_cross_asset_factors()
+    report.hits.extend(cah); report.skipped.extend(cask)
+    append_stats("cross_asset_factors", cadf); report.stats_rows_written["cross_asset_factors"] = len(cadf)
 
     log.info("scan: BTP-Bund regime monitor")
     bbrh, bbrsk = scan_btp_bund_regime()

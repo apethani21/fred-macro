@@ -818,3 +818,127 @@ def granger_min_p(y: pd.Series, x: pd.Series, max_lag: int = 4) -> dict[int, flo
     df = pd.concat([y, x], axis=1).dropna()
     res = grangercausalitytests(df, maxlag=max_lag, verbose=False)
     return {lag: float(v[0]["ssr_ftest"][1]) for lag, v in res.items()}
+
+
+# ---------- M12: cross-asset factor model (Fama-MacBeth two-pass CSR) ----------
+
+@dataclass
+class FamaMacBethResult:
+    factor_names: list[str]
+    factor_premia_pct_monthly: dict[str, float]   # premium in % per month
+    t_stats_ols: dict[str, float]                 # uncorrected OLS t-stats
+    t_stats_shanken: dict[str, float]             # Shanken (1992) EIV-corrected
+    shanken_c: float                              # correction factor 1 + λ'Σ_F⁻¹λ
+    r_squared_xsec: float                         # cross-sectional R²
+    n_assets: int
+    n_obs: int                                    # months in estimation sample
+    asset_betas: dict[str, dict[str, float]]      # first-pass betas per asset
+    asset_avg_returns_pct_ann: dict[str, float]   # annualised % return per asset
+    fit_ok: bool = True
+    error: str = ""
+
+
+def fama_macbeth_factor_model(
+    returns: pd.DataFrame,
+    factors: pd.DataFrame,
+    min_obs: int = 60,
+) -> FamaMacBethResult:
+    """Two-pass cross-sectional regression with Shanken (1992) EIV correction.
+
+    First pass:  time-series OLS per asset → beta_i (K-vector).
+    Second pass: cross-sectional OLS of mean returns on betas → factor premia λ.
+    Shanken correction: t_shanken = t_OLS / sqrt(c), c = 1 + λ'Σ_F⁻¹λ.
+
+    `returns`  — DataFrame, columns = asset names, monthly % returns.
+    `factors`  — DataFrame, columns = factor names, monthly shock values.
+    Both are aligned on a common date index before estimation.
+
+    References: Fama & MacBeth (1973), Shanken (1992 JF).
+    """
+    asset_cols = list(returns.columns)
+    factor_cols = list(factors.columns)
+
+    data = pd.concat([returns[asset_cols], factors[factor_cols]], axis=1).dropna()
+
+    if len(data) < min_obs:
+        return FamaMacBethResult(
+            factor_names=factor_cols,
+            factor_premia_pct_monthly={},
+            t_stats_ols={},
+            t_stats_shanken={},
+            shanken_c=float("nan"),
+            r_squared_xsec=float("nan"),
+            n_assets=len(asset_cols),
+            n_obs=len(data),
+            asset_betas={},
+            asset_avg_returns_pct_ann={},
+            fit_ok=False,
+            error=f"Too few observations: {len(data)} < {min_obs}",
+        )
+
+    R = data[asset_cols]
+    F = data[factor_cols]
+    T = len(data)
+
+    # First pass: time-series OLS per asset
+    F_const = sm.add_constant(F, has_constant="add")
+    betas: dict[str, dict[str, float]] = {}
+    for asset in asset_cols:
+        try:
+            res = sm.OLS(R[asset], F_const).fit()
+            betas[asset] = {f: float(res.params.get(f, 0.0)) for f in factor_cols}
+        except Exception:
+            betas[asset] = {f: 0.0 for f in factor_cols}
+
+    # Second pass: cross-sectional OLS of mean returns on first-pass betas
+    avg_R = R.mean()
+    beta_df = pd.DataFrame(betas).T[factor_cols]
+    beta_const = sm.add_constant(beta_df, has_constant="add")
+
+    try:
+        xsec = sm.OLS(avg_R, beta_const).fit()
+    except Exception as e:
+        return FamaMacBethResult(
+            factor_names=factor_cols,
+            factor_premia_pct_monthly={},
+            t_stats_ols={},
+            t_stats_shanken={},
+            shanken_c=float("nan"),
+            r_squared_xsec=float("nan"),
+            n_assets=len(asset_cols),
+            n_obs=T,
+            asset_betas=betas,
+            asset_avg_returns_pct_ann={a: round(float(avg_R[a]) * 12, 2) for a in asset_cols},
+            fit_ok=False,
+            error=str(e),
+        )
+
+    premia = {f: float(xsec.params.get(f, 0.0)) for f in factor_cols}
+    ols_t = {f: float(xsec.tvalues.get(f, 0.0)) for f in factor_cols}
+
+    # Shanken (1992) EIV correction: c = 1 + λ' Σ_F⁻¹ λ
+    K = len(factor_cols)
+    try:
+        sigma_F = F.cov().values
+        lam = np.array([premia[f] for f in factor_cols])
+        sigma_F_inv = np.linalg.inv(sigma_F + np.eye(K) * 1e-10)
+        c = float(1.0 + lam @ sigma_F_inv @ lam)
+        c = max(c, 1.0)
+    except Exception:
+        c = 1.0
+
+    shanken_t = {f: round(ols_t[f] / float(np.sqrt(c)), 3) for f in factor_cols}
+
+    return FamaMacBethResult(
+        factor_names=factor_cols,
+        factor_premia_pct_monthly={f: round(premia[f], 4) for f in factor_cols},
+        t_stats_ols={f: round(ols_t[f], 3) for f in factor_cols},
+        t_stats_shanken=shanken_t,
+        shanken_c=round(c, 4),
+        r_squared_xsec=round(float(xsec.rsquared), 4),
+        n_assets=len(asset_cols),
+        n_obs=T,
+        asset_betas={a: {f: round(betas[a][f], 4) for f in factor_cols} for a in asset_cols},
+        asset_avg_returns_pct_ann={a: round(float(avg_R[a]) * 12, 2) for a in asset_cols},
+        fit_ok=True,
+    )

@@ -38,6 +38,8 @@ STATS_FILES = {
     "bond_predictability": STATS_DIR / "bond_predictability.parquet",
     # M2: Nelson-Siegel yield curve factors
     "ns_factors": STATS_DIR / "ns_factors.parquet",
+    # M12: cross-asset factor model (Fama-MacBeth two-pass CSR)
+    "cross_asset_factors": STATS_DIR / "cross_asset_factors.parquet",
     # Relationship monitor: named spread and decomposition relationships
     "relationship_spreads": STATS_DIR / "relationship_spreads.parquet",
     "relationship_decompositions": STATS_DIR / "relationship_decompositions.parquet",
@@ -322,6 +324,7 @@ def append_stats(name: str, rows: pd.DataFrame) -> Path:
         "breakeven_components": ["date", "tenor"],
         "bond_predictability": ["date", "run_date"],
         "ns_factors": ["date", "run_date"],
+        "cross_asset_factors": ["factor_name", "run_date"],
         "relationship_spreads": ["spread_id", "run_date"],
         "relationship_decompositions": ["decomp_id", "component", "run_date"],
     }[name]

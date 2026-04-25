@@ -861,6 +861,10 @@ _EQUATION_LATEX: dict[str, str] = {
     "cp_factor_signal": (
         r"rx_{t \to t+1}^{(n)} = \alpha + \beta \cdot \mathrm{CP}_t + \varepsilon_{t+1}"
     ),
+    # Fama-MacBeth second-pass cross-sectional regression
+    "cross_asset_factor": (
+        r"\bar{R}_i = \lambda_0 + \sum_{k=1}^{K} \lambda_k \hat{\beta}_{ik} + \varepsilon_i"
+    ),
 }
 
 
@@ -892,7 +896,7 @@ _CHART_KINDS = {"correlation_shift", "regime_transition", "notable_move_level",
                 "notable_move_change", "lead_lag_change", "cointegration_break",
                 "harvested_source", "fomc_event_study", "structural_break",
                 "cp_factor_signal", "ns_factor_extreme", "btp_bund_regime",
-                "spread_extreme", "decomposition_shift"}
+                "spread_extreme", "decomposition_shift", "cross_asset_factor"}
 
 
 def generate_charts(pick: LessonPick, ctx: dict[str, SeriesSnapshot], today: date) -> list[Path]:

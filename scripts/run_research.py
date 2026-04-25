@@ -38,6 +38,11 @@ Common modes:
   python scripts/run_research.py --ns-factors
       Fit Nelson-Siegel yield curve factors (level/slope/curvature) and detect
       historical extremes. Runs as part of the full scan; this flag runs it alone.
+
+  python scripts/run_research.py --cross-asset
+      Run M12 Fama-MacBeth cross-asset factor model only. Tests whether macro
+      factor shocks (inflation surprise, growth surprise, credit stress, real rate
+      change) are priced across equities, Treasuries, credit, oil, and gold.
 """
 from __future__ import annotations
 
@@ -73,6 +78,7 @@ def main() -> int:
     parser.add_argument("--questions-only", action="store_true", help="Run M4/M10/M11 question analyses only.")
     parser.add_argument("--relationships-only", action="store_true", help="Run spread + decomposition relationship monitors only.")
     parser.add_argument("--ns-factors", action="store_true", help="Run Nelson-Siegel factor scan only (M2).")
+    parser.add_argument("--cross-asset", action="store_true", help="Run M12 cross-asset factor model only (Fama-MacBeth).")
     args = parser.parse_args()
 
     pairs = None
@@ -168,6 +174,26 @@ def main() -> int:
                 if nssk:
                     print(f"  Skipped: {nssk}")
             run.set("hits", len(nsh))
+            run.set("findings", len(findings))
+            build_health_snapshot()
+            return 0
+
+        if args.cross_asset:
+            from src.research.scan import scan_cross_asset_factors, _finding_from_hit
+            from src.research.findings import append_stats, write_findings_md
+            cah, cadf, cask = scan_cross_asset_factors()
+            if len(cadf) and not args.dry_run:
+                append_stats("cross_asset_factors", cadf)
+            findings = [_finding_from_hit(h, today) for h in cah]
+            if not args.dry_run and findings:
+                added, kept = write_findings_md(findings, overwrite=args.overwrite)
+                print(f"Cross-asset factors: {len(cah)} hit(s), {len(findings)} finding(s) ({added} new, {kept} kept).")
+            else:
+                for f in findings:
+                    print(f"  [{f.kind}] {f.title}")
+                if cask:
+                    print(f"  Skipped: {cask}")
+            run.set("hits", len(cah))
             run.set("findings", len(findings))
             build_health_snapshot()
             return 0
