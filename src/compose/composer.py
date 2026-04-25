@@ -890,7 +890,9 @@ def generate_equation_image(finding: "Finding", chart_dir: Path, today: date) ->
 
 _CHART_KINDS = {"correlation_shift", "regime_transition", "notable_move_level",
                 "notable_move_change", "lead_lag_change", "cointegration_break",
-                "harvested_source", "fomc_event_study", "structural_break"}
+                "harvested_source", "fomc_event_study", "structural_break",
+                "cp_factor_signal", "ns_factor_extreme", "btp_bund_regime",
+                "spread_extreme", "decomposition_shift"}
 
 
 def generate_charts(pick: LessonPick, ctx: dict[str, SeriesSnapshot], today: date) -> list[Path]:

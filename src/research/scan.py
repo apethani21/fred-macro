@@ -572,6 +572,95 @@ def scan_bond_predictability() -> tuple[list[DetectorHit], pd.DataFrame, list[tu
 
 
 # -------------------------------------------------------------------------
+# Nelson-Siegel factor scanner (M2)
+# -------------------------------------------------------------------------
+
+_NS_THRESHOLD_PCT = 0.10   # fire when any factor is at ≤10th or ≥90th historical percentile
+
+
+def scan_ns_factors() -> tuple[list[DetectorHit], pd.DataFrame, list[tuple[str, str]]]:
+    """Fit Nelson-Siegel factors; fire when level/slope/curvature is at historical extreme.
+
+    Fires a single 'ns_factor_extreme' hit with all three factors in evidence when any
+    factor is at or beyond the _NS_THRESHOLD_PCT percentile boundary.
+    """
+    from src.analytics.bonds import nelson_siegel_factors, ns_factor_snapshot
+
+    hits: list[DetectorHit] = []
+    skipped: list[tuple[str, str]] = []
+
+    try:
+        factors = nelson_siegel_factors(freq="M")
+    except Exception as exc:
+        skipped.append(("ns_factors", f"compute: {exc}"))
+        return hits, pd.DataFrame(), skipped
+
+    if factors is None or len(factors) < 36:
+        n = 0 if factors is None else len(factors)
+        skipped.append(("ns_factors", f"insufficient history ({n} months; need 36)"))
+        return hits, pd.DataFrame(), skipped
+
+    snap = ns_factor_snapshot(factors)
+    if snap is None:
+        skipped.append(("ns_factors", "snapshot returned None"))
+        return hits, pd.DataFrame(), skipped
+
+    # Determine which factors are at extremes.
+    extremes: list[str] = []
+    if snap.level_pct <= _NS_THRESHOLD_PCT or snap.level_pct >= 1 - _NS_THRESHOLD_PCT:
+        extremes.append(f"level={snap.level:.2f}% (pct={snap.level_pct:.2f})")
+    if snap.slope_pct <= _NS_THRESHOLD_PCT or snap.slope_pct >= 1 - _NS_THRESHOLD_PCT:
+        extremes.append(f"slope={snap.slope:.2f}% (pct={snap.slope_pct:.2f})")
+    if snap.curvature_pct <= _NS_THRESHOLD_PCT or snap.curvature_pct >= 1 - _NS_THRESHOLD_PCT:
+        extremes.append(f"curvature={snap.curvature:.2f}% (pct={snap.curvature_pct:.2f})")
+
+    series_ids = ("DGS1", "DGS2", "DGS3", "DGS5", "DGS7", "DGS10")
+
+    if extremes:
+        label = "; ".join(extremes)
+        score = max(
+            abs(snap.level_z),
+            abs(snap.slope_z),
+            abs(snap.curvature_z),
+        )
+        hits.append(DetectorHit(
+            kind="ns_factor_extreme",
+            series_ids=series_ids,
+            label=f"NS yield curve factors at historical extreme: {label}",
+            score=min(score / 3.0, 1.0),
+            evidence={
+                "level": round(snap.level, 4),
+                "slope": round(snap.slope, 4),
+                "curvature": round(snap.curvature, 4),
+                "level_pct": round(snap.level_pct, 3),
+                "slope_pct": round(snap.slope_pct, 3),
+                "curvature_pct": round(snap.curvature_pct, 3),
+                "level_z": round(snap.level_z, 3),
+                "slope_z": round(snap.slope_z, 3),
+                "curvature_z": round(snap.curvature_z, 3),
+                "history_n": snap.history_n,
+                "date": snap.date.isoformat() if hasattr(snap.date, "isoformat") else str(snap.date),
+            },
+        ))
+
+    # Persist NS factor time series (last 120 months).
+    rows: list[dict] = []
+    for dt, row in factors.tail(120).iterrows():
+        rows.append({
+            "date": dt.date().isoformat() if hasattr(dt, "date") else str(dt),
+            "level": round(float(row["level"]), 4),
+            "slope": round(float(row["slope"]), 4),
+            "curvature": round(float(row["curvature"]), 4),
+            "fit_rmse_bps": round(float(row["fit_rmse"]), 2),
+            "run_date": date.today().isoformat(),
+        })
+    stats_df = pd.DataFrame(rows) if rows else pd.DataFrame(
+        columns=["date", "level", "slope", "curvature", "fit_rmse_bps", "run_date"]
+    )
+    return hits, stats_df, skipped
+
+
+# -------------------------------------------------------------------------
 # BTP-Bund regime scanner
 # -------------------------------------------------------------------------
 
@@ -708,6 +797,7 @@ _KIND_ANCHORS: dict[str, list[str]] = {
     "cp_factor_signal":     ["bond risk premium", "term premium", "yield curve"],
     "btp_bund_regime":      ["btp-bund", "fragmentation", "sovereign", "ecb"],
     "decomposition_shift":  ["decomposition", "component", "contribution"],
+    "ns_factor_extreme":    ["nelson-siegel", "yield curve", "level", "slope", "curvature", "term structure"],
 }
 
 
@@ -1056,6 +1146,31 @@ def _finding_from_hit(hit: DetectorHit, today: date) -> Finding:
             f"Robust z-score: {ev['z_score']:+.2f}. "
             f"TPI informal trigger: ~200bp; 2022 peak ~230bp."
         )
+    elif hit.kind == "ns_factor_extreme":
+        level = ev["level"]
+        slope = ev["slope"]
+        curvature = ev["curvature"]
+        level_pct = ev["level_pct"]
+        slope_pct = ev["slope_pct"]
+        curvature_pct = ev["curvature_pct"]
+        n_months = ev["history_n"]
+        title = (
+            f"Nelson-Siegel yield curve factors at historical extreme: "
+            f"level={level:.2f}% ({level_pct:.0%} pctile), "
+            f"slope={slope:.2f}% ({slope_pct:.0%} pctile), "
+            f"curvature={curvature:.2f}% ({curvature_pct:.0%} pctile)"
+        )
+        slug = make_slug("ns_factor_extreme", hit.series_ids, extra=ev["date"][:7])
+        claim = (
+            f"Fitting the Diebold-Li (2006) Nelson-Siegel model to the Treasury curve "
+            f"(DGS1–DGS30) gives three latent factors as of {ev['date']}: "
+            f"level β₀={level:.2f}% ({level_pct:.0%} of {n_months}-month history), "
+            f"slope β₁={slope:.2f}% ({slope_pct:.0%} pctile; negative = upward-sloping curve), "
+            f"curvature β₂={curvature:.2f}% ({curvature_pct:.0%} pctile; positive = medium-term hump). "
+            f"At least one factor is at or beyond the 10th/90th historical percentile boundary. "
+            f"z-scores: level {ev['level_z']:+.2f}, slope {ev['slope_z']:+.2f}, "
+            f"curvature {ev['curvature_z']:+.2f}."
+        )
     else:
         title = f"Unknown hit kind: {hit.kind}"
         slug = make_slug(hit.kind, hit.series_ids)
@@ -1143,6 +1258,11 @@ def run_scan(
     bph, bpdf, bpsk = scan_bond_predictability()
     report.hits.extend(bph); report.skipped.extend(bpsk)
     append_stats("bond_predictability", bpdf); report.stats_rows_written["bond_predictability"] = len(bpdf)
+
+    log.info("scan: Nelson-Siegel yield curve factors (M2)")
+    nsh, nsdf, nssk = scan_ns_factors()
+    report.hits.extend(nsh); report.skipped.extend(nssk)
+    append_stats("ns_factors", nsdf); report.stats_rows_written["ns_factors"] = len(nsdf)
 
     log.info("scan: BTP-Bund regime monitor")
     bbrh, bbrsk = scan_btp_bund_regime()

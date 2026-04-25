@@ -16,6 +16,12 @@ Usage:
 
   python scripts/run_harvest.py --max 5
       Process at most 5 relevant articles per source.
+
+  python scripts/run_harvest.py --seeds
+      Enrich unused topic seeds with pre-fetched primary sources.
+
+  python scripts/run_harvest.py --seeds --seed-id notable_move_level-DGS10
+      Enrich only the seed whose ID contains this substring.
 """
 from __future__ import annotations
 
@@ -40,19 +46,36 @@ def main() -> int:
                         help="Harvest only this source.")
     parser.add_argument("--max", type=int, default=10, dest="max_per_source",
                         help="Max relevant articles to process per source (default: 10).")
+    parser.add_argument("--seeds", action="store_true",
+                        help="Enrich unused topic seeds with pre-fetched primary sources.")
+    parser.add_argument("--seed-id", metavar="SUBSTRING",
+                        help="With --seeds: enrich only seeds whose ID contains this substring.")
+    parser.add_argument("--max-seeds", type=int, default=5,
+                        help="Max seeds to enrich per run (default: 5).")
     args = parser.parse_args()
 
     from src.monitor.health import build_health_snapshot
     from src.monitor.run_log import RunLogger
     from src.research.harvest import harvest_all
 
-    sources = [args.source] if args.source else None
     with RunLogger("run_harvest", dry_run=args.dry_run) as run:
-        run.set("sources", sources or ["feds_notes", "liberty_street", "sf_fed"])
-        run.set("max_per_source", args.max_per_source)
-        n = harvest_all(dry_run=args.dry_run, max_per_source=args.max_per_source, sources=sources)
-        run.set("new_findings", n)
-        print(f"\nHarvest complete. {n} new finding(s) {'would be ' if args.dry_run else ''}written.")
+        if args.seeds:
+            from src.research.enrich import enrich_seeds
+            run.set("mode", "seed_enrich")
+            n = enrich_seeds(
+                dry_run=args.dry_run,
+                seed_id_filter=args.seed_id,
+                max_seeds=args.max_seeds,
+            )
+            run.set("seeds_enriched", n)
+            print(f"\nSeed enrichment complete. {n} seed(s) enriched.")
+        else:
+            sources = [args.source] if args.source else None
+            run.set("sources", sources or ["feds_notes", "liberty_street", "sf_fed"])
+            run.set("max_per_source", args.max_per_source)
+            n = harvest_all(dry_run=args.dry_run, max_per_source=args.max_per_source, sources=sources)
+            run.set("new_findings", n)
+            print(f"\nHarvest complete. {n} new finding(s) {'would be ' if args.dry_run else ''}written.")
 
     build_health_snapshot()
     return 0

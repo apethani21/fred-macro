@@ -34,8 +34,9 @@ FRED_MACRO_DIR=/home/ubuntu/fred-macro
 
 # --- Knowledge harvest: 23:00 UTC weekdays ---
 # Scrapes FEDS Notes, Liberty Street, SF Fed for new articles and extracts findings.
+# Then enriches any new topic seeds with pre-fetched primary sources (--seeds).
 # Runs after the research phase. Max 5 articles per source to stay within API budget.
-0 23 * * 1-5 cd $FRED_MACRO_DIR && python scripts/run_harvest.py --max 5 >> logs/run_harvest.log 2>&1
+0 23 * * 1-5 cd $FRED_MACRO_DIR && python scripts/run_harvest.py --max 5 && python scripts/run_harvest.py --seeds --max-seeds 5 >> logs/run_harvest.log 2>&1
 
 # --- Daily email: 05:45 UTC weekdays (06:45 London winter / 06:45 London summer = 05:45 UTC) ---
 # Winter (UTC+0): 05:45 UTC = 05:45 London. Adjust to 04:45 UTC in summer (BST = UTC+1).

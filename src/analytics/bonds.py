@@ -235,3 +235,230 @@ def cp_factor_snapshot(cp: pd.Series, reg_results: list[CPRegressionResult]) -> 
         r2_5y=r2_5y,
         r2_10y=r2_10y,
     )
+
+
+# ── Nelson-Siegel Yield Curve Factors (M2) ────────────────────────────────────
+#
+# Diebold-Li (2006) parameterisation with fixed λ = 0.0609 (maximises curvature
+# loading at ~30-month maturity). For fixed λ the model is linear in factors:
+#
+#   y(τ) = β0·L(τ) + β1·S(τ) + β2·C(τ)
+#
+# where L(τ)=1, S(τ)=(1−e^{−λτ})/(λτ), C(τ)=S(τ)−e^{−λτ}
+# β0 = level (long-run yield), β1 = slope (short − long), β2 = curvature (hump)
+#
+# Reference: Diebold & Li (2006), "Forecasting the Term Structure of Government
+# Bond Yields," Journal of Econometrics 130(2):337-364.
+
+_NS_LAMBDA = 0.0609  # Diebold-Li canonical decay parameter
+
+
+@dataclass(frozen=True)
+class NSFactors:
+    """Nelson-Siegel factor snapshot for a single date."""
+    date: pd.Timestamp
+    level: float       # β0 — long-run yield level (%)
+    slope: float       # β1 — curve steepness; negative = inverted
+    curvature: float   # β2 — medium-term hump; positive = belly rich
+    fit_rmse: float    # root mean squared fitting error across maturities (bps)
+    n_maturities: int  # maturities used in fit
+
+
+@dataclass(frozen=True)
+class NSFactorSnapshot:
+    """Current NS factor readings with historical context."""
+    date: pd.Timestamp
+    level: float
+    slope: float
+    curvature: float
+    level_pct: float        # percentile rank vs full history
+    slope_pct: float
+    curvature_pct: float
+    level_z: float          # z-score vs full history
+    slope_z: float
+    curvature_z: float
+    history_n: int          # months of factor history
+
+
+def _ns_loadings(tenors_years: np.ndarray, lam: float = _NS_LAMBDA) -> np.ndarray:
+    """Return (n_tenors × 3) loading matrix [L, S, C] for given maturities."""
+    lt = lam * tenors_years
+    # Avoid division by zero for τ → 0
+    lt_safe = np.where(lt < 1e-8, 1e-8, lt)
+    S = (1 - np.exp(-lt_safe)) / lt_safe
+    C = S - np.exp(-lt_safe)
+    L = np.ones_like(S)
+    return np.column_stack([L, S, C])
+
+
+def _fit_ns_row(yields_row: np.ndarray, tenors: np.ndarray) -> tuple[float, float, float, float]:
+    """Fit NS to a single cross-section of yields. Returns (β0, β1, β2, rmse_bps)."""
+    X = _ns_loadings(tenors)
+    mask = np.isfinite(yields_row)
+    if mask.sum() < 3:
+        return float("nan"), float("nan"), float("nan"), float("nan")
+    X_, y_ = X[mask], yields_row[mask]
+    # OLS: β = (X'X)^{-1} X'y
+    try:
+        betas, _, _, _ = np.linalg.lstsq(X_, y_, rcond=None)
+    except np.linalg.LinAlgError:
+        return float("nan"), float("nan"), float("nan"), float("nan")
+    fitted = X_ @ betas
+    rmse_bps = float(np.sqrt(np.mean((y_ - fitted) ** 2)) * 100)
+    return float(betas[0]), float(betas[1]), float(betas[2]), rmse_bps
+
+
+def nelson_siegel_factors(
+    tenors: dict[int, str] | None = None,
+    freq: str = "M",
+    lam: float = _NS_LAMBDA,
+) -> pd.DataFrame:
+    """Compute time series of Nelson-Siegel factors (level, slope, curvature).
+
+    Uses _ALL_TENORS (1Y–30Y) by default: the wider maturity range is essential for
+    numerical stability — with only 1Y–10Y the loading matrix is near-singular at
+    λ=0.0609, producing extreme and unstable factor estimates.
+
+    Returns DataFrame with columns ['level', 'slope', 'curvature', 'fit_rmse'],
+    indexed by month-end dates. Rows with fewer than 3 valid maturities are dropped.
+    """
+    t = tenors if tenors is not None else _ALL_TENORS
+    yields = par_yields(tenors=t, freq=freq)
+    if yields.empty:
+        return pd.DataFrame(columns=["level", "slope", "curvature", "fit_rmse"])
+
+    tenor_arr = np.array(sorted(c for c in yields.columns if isinstance(c, int)), dtype=float)
+    results = []
+    for dt, row in yields.iterrows():
+        b0, b1, b2, rmse = _fit_ns_row(row.values.astype(float), tenor_arr)
+        results.append({"date": dt, "level": b0, "slope": b1, "curvature": b2, "fit_rmse": rmse})
+
+    df = pd.DataFrame(results).set_index("date")
+    return df.dropna(subset=["level", "slope", "curvature"])
+
+
+def ns_factor_snapshot(factors: pd.DataFrame | None = None) -> NSFactorSnapshot | None:
+    """Compute current NS factor snapshot with historical percentile/z-score context.
+
+    Pass pre-computed factors DataFrame or call with None to compute fresh.
+    Returns None if fewer than 24 months of data are available.
+    """
+    if factors is None:
+        factors = nelson_siegel_factors()
+    if factors is None or len(factors) < 24:
+        return None
+
+    cur = factors.iloc[-1]
+    dt = factors.index[-1]
+
+    def _pct(col: str) -> float:
+        return float(percentile_rank(factors[col], float(cur[col])))
+
+    def _z(col: str) -> float:
+        return float(zscore_vs_history(factors[col]))
+
+    return NSFactorSnapshot(
+        date=dt,
+        level=float(cur["level"]),
+        slope=float(cur["slope"]),
+        curvature=float(cur["curvature"]),
+        level_pct=_pct("level"),
+        slope_pct=_pct("slope"),
+        curvature_pct=_pct("curvature"),
+        level_z=_z("level"),
+        slope_z=_z("slope"),
+        curvature_z=_z("curvature"),
+        history_n=len(factors),
+    )
+
+
+def ns_macro_var(
+    factors: pd.DataFrame | None = None,
+    macro_series: dict[str, str] | None = None,
+    lags: int = 2,
+) -> dict:
+    """Fit a VAR on [level, slope, curvature, UNRATE, CPI_YoY] and return summary.
+
+    Returns dict with keys:
+      - 'aic': model AIC
+      - 'factor_correlations': {factor: {macro_var: correlation}} — contemporaneous correlations
+      - 'granger': {target: {cause: p_value}} — Granger causality p-values (macro → NS factors)
+      - 'forecast_1m': {factor: forecasted_value} — 1-month-ahead VAR forecast
+
+    Returns {} if statsmodels is not available or data is insufficient.
+    """
+    try:
+        from statsmodels.tsa.vector_ar.var_model import VAR
+        from statsmodels.tsa.stattools import grangercausalitytests
+    except ImportError:
+        return {}
+
+    if factors is None:
+        factors = nelson_siegel_factors()
+    if factors is None or len(factors) < 36:
+        return {}
+
+    macro = macro_series or {"UNRATE": "UNRATE", "CPI_YoY": "CPIAUCSL"}
+
+    macro_data: dict[str, pd.Series] = {}
+    for label, sid in macro.items():
+        try:
+            s = D.load_series(sid, freq="M")
+            if label == "CPI_YoY":
+                s = s.pct_change(12) * 100
+            macro_data[label] = s
+        except Exception:
+            pass
+
+    panel = factors[["level", "slope", "curvature"]].copy()
+    for label, s in macro_data.items():
+        panel[label] = s.reindex(panel.index, method="ffill")
+    panel = panel.dropna()
+
+    if len(panel) < 36:
+        return {}
+
+    result: dict = {}
+
+    # Contemporaneous correlations
+    corr = panel.corr()
+    factor_corr: dict = {}
+    for factor in ["level", "slope", "curvature"]:
+        factor_corr[factor] = {
+            col: round(float(corr.loc[factor, col]), 3)
+            for col in macro_data
+            if col in corr.columns
+        }
+    result["factor_correlations"] = factor_corr
+
+    # VAR fit
+    try:
+        model = VAR(panel)
+        fitted = model.fit(lags, ic=None)
+        result["aic"] = round(float(fitted.aic), 2)
+
+        # 1-month-ahead forecast
+        forecast = fitted.forecast(panel.values[-lags:], steps=1)[0]
+        result["forecast_1m"] = {
+            col: round(float(v), 4)
+            for col, v in zip(panel.columns, forecast)
+        }
+    except Exception:
+        pass
+
+    # Granger causality: does each macro variable Granger-cause each NS factor?
+    granger: dict = {}
+    for factor in ["level", "slope", "curvature"]:
+        granger[factor] = {}
+        for macro_var in macro_data:
+            try:
+                pair = panel[[factor, macro_var]].dropna()
+                gc = grangercausalitytests(pair, maxlag=lags, verbose=False)
+                # Report minimum p-value across lags
+                min_p = min(gc[lag][0]["ssr_ftest"][1] for lag in range(1, lags + 1))
+                granger[factor][macro_var] = round(float(min_p), 4)
+            except Exception:
+                granger[factor][macro_var] = float("nan")
+    result["granger"] = granger
+
+    return result

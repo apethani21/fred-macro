@@ -80,6 +80,22 @@ _SEARCH_QUERIES: dict[str, list[str]] = {
     "regime_transition": [
         "{series_a} regime transition macro Federal Reserve research",
     ],
+    "structural_break": [
+        "{series_a} structural break mean shift Federal Reserve research",
+        "{series_a} regime change FEDS Notes Liberty Street",
+    ],
+    "spread_extreme": [
+        "{series_a} spread extreme historical Federal Reserve BIS research",
+        "{series_a} fragmentation stress Liberty Street Economics",
+    ],
+    "btp_bund_regime": [
+        "BTP Bund spread fragmentation ECB TPI sovereign risk",
+        "Italy Germany spread ECB monetary policy fragmentation",
+    ],
+    "ns_factor_extreme": [
+        "{series_a} yield curve level slope curvature macro Federal Reserve",
+        "Nelson Siegel yield curve factors macro FEDS Notes",
+    ],
 }
 
 _SEARCH_SITES = [
@@ -281,6 +297,172 @@ def _apply_enrichment(finding: Finding, result: dict) -> Finding:
 
     from dataclasses import replace
     return replace(finding, sources=new_sources, interpretation=new_interpretation)
+
+
+_SEED_ENRICH_SYSTEM = """\
+You are a research assistant helping pre-fetch primary sources for a macro topic seed.
+
+A topic seed is a statistical detection result from an overnight scan — it identifies an unusual
+move, regime shift, or relationship change across macro series. Your job is to find 1-2 primary
+sources (FEDS Notes, Liberty Street Economics, SF Fed Economic Letter, BIS) that provide
+institutional or empirical context for the detector type and series involved.
+
+Guidelines:
+- Prefer sources that explain *why* this type of move matters mechanically, not just describe it.
+- Sources should be from authoritative institutions: Federal Reserve (any regional Fed), BIS, ECB,
+  NBER, IMF.
+- Do not return tangential sources. A source must be directly relevant to the specific series or
+  detector type.
+- Do not return sources behind paywalls.
+
+OUTPUT FORMAT (raw JSON, no code fence):
+{
+  "sources": [
+    {
+      "url": "https://...",
+      "institution": "Federal Reserve Board",
+      "date": "2023-06",
+      "title": "Title of piece",
+      "relevance": "One sentence: what this source contributes to understanding this seed."
+    }
+  ]
+}
+If no relevant source found: { "sources": [] }
+"""
+
+
+def _enrich_seed(seed: "TopicSeed") -> list[dict]:  # noqa: F821
+    """Search for primary sources for a seed. Returns list of source dicts."""
+    import anthropic
+    import os
+
+    key_file = Path.home() / "keys" / "anthropic" / "key.txt"
+    api_key = key_file.read_text().strip() if key_file.exists() else os.environ.get("ANTHROPIC_API_KEY", "")
+    if not api_key:
+        raise RuntimeError("Anthropic API key not found.")
+
+    client = anthropic.Anthropic(api_key=api_key)
+
+    sids = list(seed.series_ids)
+    series_a = sids[0] if sids else seed.detector
+    series_b = sids[1] if len(sids) > 1 else ""
+
+    templates = _SEARCH_QUERIES.get(seed.detector, [
+        "{series_a} macro Federal Reserve research",
+        "{series_a} Liberty Street Economics FEDS Notes",
+    ])
+    queries = []
+    for tpl in templates[:2]:
+        q = tpl.format(series_a=series_a, series_b=series_b).strip()
+        queries.append(f"{q} site:federalreserve.gov/econres/notes")
+        queries.append(f"{q} site:libertystreeteconomics.newyorkfed.org")
+    queries = queries[:4]
+
+    user_content = (
+        f"SEED DETECTOR: {seed.detector}\n"
+        f"SERIES: {', '.join(sids[:4])}\n"
+        f"CONCEPT ANCHORS: {', '.join(seed.concept_anchors)}\n\n"
+        f"SUGGESTED SEARCH QUERIES:\n" + "\n".join(f"- {q}" for q in queries) + "\n\n"
+        "Search for 1-2 primary sources that provide institutional or empirical context for this "
+        "type of macro detection. Fetch the most promising page to verify relevance. Return JSON."
+    )
+
+    tools = [
+        {
+            "name": "web_search",
+            "description": "Search the web for relevant sources.",
+            "input_schema": {"type": "object", "properties": {"query": {"type": "string"}}, "required": ["query"]},
+        },
+        {
+            "name": "web_fetch",
+            "description": "Fetch and read a web page.",
+            "input_schema": {"type": "object", "properties": {"url": {"type": "string"}}, "required": ["url"]},
+        },
+    ]
+
+    messages: list[dict] = [{"role": "user", "content": user_content}]
+    for _ in range(6):
+        response = client.messages.create(
+            model="claude-sonnet-4-6",
+            max_tokens=1024,
+            system=[{"type": "text", "text": _SEED_ENRICH_SYSTEM, "cache_control": {"type": "ephemeral"}}],
+            tools=tools,
+            messages=messages,
+        )
+        if response.stop_reason == "end_turn":
+            for block in response.content:
+                if block.type == "text":
+                    try:
+                        result = _extract_json(block.text)
+                        return result.get("sources", [])
+                    except (ValueError, json.JSONDecodeError):
+                        pass
+            break
+        if response.stop_reason != "tool_use":
+            break
+        tool_results = []
+        for block in response.content:
+            if block.type == "tool_use":
+                try:
+                    if block.name == "web_search":
+                        content = _execute_web_search(block.input.get("query", ""))
+                    elif block.name == "web_fetch":
+                        content = _execute_web_fetch(block.input.get("url", ""))
+                    else:
+                        content = f"Unknown tool: {block.name}"
+                except Exception as exc:
+                    content = f"Tool error: {exc}"
+                tool_results.append({"type": "tool_result", "tool_use_id": block.id, "content": content})
+        messages.append({"role": "assistant", "content": response.content})
+        messages.append({"role": "user", "content": tool_results})
+
+    return []
+
+
+def enrich_seeds(
+    path: Path | None = None,
+    dry_run: bool = False,
+    seed_id_filter: str | None = None,
+    skip_sourced: bool = True,
+    max_seeds: int = 5,
+) -> int:
+    """Populate seed.sources for unused, unexpired seeds that have no sources yet.
+
+    Returns count of seeds enriched.
+    """
+    from src.research.seeds import SEEDS_PATH, read_seeds, update_seed_sources
+
+    seeds_path = path or SEEDS_PATH
+    seeds = read_seeds(seeds_path)
+    if not seeds:
+        return 0
+
+    today = date.today().isoformat()
+    candidates = [
+        s for s in seeds
+        if not s.used
+        and s.expires >= today
+        and (not skip_sourced or not s.sources)
+        and (seed_id_filter is None or seed_id_filter in s.id)
+    ][:max_seeds]
+
+    logger.info("Seed enrichment: %d candidate(s) to enrich", len(candidates))
+    enriched = 0
+    for seed in candidates:
+        logger.info("  Enriching seed: %s", seed.id)
+        try:
+            sources = _enrich_seed(seed)
+            if sources:
+                if not dry_run:
+                    update_seed_sources(seed.id, sources, path=seeds_path)
+                enriched += 1
+                logger.info("  → %d source(s) added", len(sources))
+            else:
+                logger.info("  → no sources found")
+        except Exception as exc:
+            logger.warning("  Seed enrichment failed: %s", exc)
+
+    return enriched
 
 
 def enrich_all(

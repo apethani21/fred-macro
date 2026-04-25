@@ -34,6 +34,10 @@ Common modes:
   python scripts/run_research.py --relationships-only
       Run spread + decomposition relationship monitors only. Fast check of named
       macro relationships without running the full series-level scan.
+
+  python scripts/run_research.py --ns-factors
+      Fit Nelson-Siegel yield curve factors (level/slope/curvature) and detect
+      historical extremes. Runs as part of the full scan; this flag runs it alone.
 """
 from __future__ import annotations
 
@@ -68,6 +72,7 @@ def main() -> int:
     parser.add_argument("--fomc-only", action="store_true", help="Run FOMC event study only (skip core scan).")
     parser.add_argument("--questions-only", action="store_true", help="Run M4/M10/M11 question analyses only.")
     parser.add_argument("--relationships-only", action="store_true", help="Run spread + decomposition relationship monitors only.")
+    parser.add_argument("--ns-factors", action="store_true", help="Run Nelson-Siegel factor scan only (M2).")
     args = parser.parse_args()
 
     pairs = None
@@ -142,6 +147,27 @@ def main() -> int:
                 for f in findings:
                     print(f"  [{f.kind}] {f.title}")
             run.set("hits", len(rh))
+            run.set("findings", len(findings))
+            build_health_snapshot()
+            return 0
+
+        if args.ns_factors:
+            from src.research.scan import scan_ns_factors
+            from src.research.findings import append_stats, write_findings_md
+            from src.research.scan import _finding_from_hit
+            nsh, nsdf, nssk = scan_ns_factors()
+            if len(nsdf) and not args.dry_run:
+                append_stats("ns_factors", nsdf)
+            findings = [_finding_from_hit(h, today) for h in nsh]
+            if not args.dry_run and findings:
+                added, kept = write_findings_md(findings, overwrite=args.overwrite)
+                print(f"NS factors: {len(nsh)} hit(s), {len(findings)} finding(s) ({added} new, {kept} kept).")
+            else:
+                for f in findings:
+                    print(f"  [{f.kind}] {f.title}")
+                if nssk:
+                    print(f"  Skipped: {nssk}")
+            run.set("hits", len(nsh))
             run.set("findings", len(findings))
             build_health_snapshot()
             return 0

@@ -99,6 +99,24 @@ def existing_seed_ids(path: Path | None = None) -> set[str]:
     return {s.id for s in read_seeds(path)}
 
 
+def update_seed_sources(seed_id: str, sources: list[dict], path: Path | None = None) -> bool:
+    """Overwrite seed.sources for the given id. Returns True if seed was found."""
+    path = path or SEEDS_PATH
+    if not path.exists():
+        return False
+    seeds = read_seeds(path)
+    updated = False
+    for i, s in enumerate(seeds):
+        if s.id == seed_id:
+            from dataclasses import replace
+            seeds[i] = replace(s, sources=sources)
+            updated = True
+            break
+    if updated:
+        _rewrite(seeds, path)
+    return updated
+
+
 # ---------- private helpers ----------
 
 def _to_dict(seed: TopicSeed) -> dict:

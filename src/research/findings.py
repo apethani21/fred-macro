@@ -36,6 +36,8 @@ STATS_FILES = {
     "breakeven_components": STATS_DIR / "breakeven_components.parquet",
     # M3: bond return predictability / CP factor
     "bond_predictability": STATS_DIR / "bond_predictability.parquet",
+    # M2: Nelson-Siegel yield curve factors
+    "ns_factors": STATS_DIR / "ns_factors.parquet",
     # Relationship monitor: named spread and decomposition relationships
     "relationship_spreads": STATS_DIR / "relationship_spreads.parquet",
     "relationship_decompositions": STATS_DIR / "relationship_decompositions.parquet",
@@ -319,6 +321,7 @@ def append_stats(name: str, rows: pd.DataFrame) -> Path:
         "inflation_episodes": ["episode_idx", "run_date"],
         "breakeven_components": ["date", "tenor"],
         "bond_predictability": ["date", "run_date"],
+        "ns_factors": ["date", "run_date"],
         "relationship_spreads": ["spread_id", "run_date"],
         "relationship_decompositions": ["decomp_id", "component", "run_date"],
     }[name]
