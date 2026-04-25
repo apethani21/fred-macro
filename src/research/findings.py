@@ -324,7 +324,7 @@ def append_stats(name: str, rows: pd.DataFrame) -> Path:
         "breakeven_components": ["date", "tenor"],
         "bond_predictability": ["date", "run_date"],
         "ns_factors": ["date", "run_date"],
-        "cross_asset_factors": ["factor_name", "run_date"],
+        "cross_asset_factors": ["regime", "factor_name", "run_date"],
         "relationship_spreads": ["spread_id", "run_date"],
         "relationship_decompositions": ["decomp_id", "component", "run_date"],
     }[name]

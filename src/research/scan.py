@@ -665,14 +665,20 @@ def scan_ns_factors() -> tuple[list[DetectorHit], pd.DataFrame, list[tuple[str, 
 # -------------------------------------------------------------------------
 
 def scan_cross_asset_factors() -> tuple[list[DetectorHit], pd.DataFrame, list[tuple[str, str]]]:
-    """Fama-MacBeth two-pass cross-sectional regression across 8 asset classes.
+    """Fama-MacBeth two-pass cross-sectional regression across ~13 asset classes.
 
-    Factors: inflation surprise, growth surprise, credit stress (HY spread chg),
-    real rate change. Assets: equities, 2Y/10Y/30Y Treasuries, HY credit, IG
-    credit, WTI crude, gold. Fires when any Shanken-corrected |t| >= 2.0.
+    Factors: inflation surprise, growth surprise, credit stress (Baa spread chg),
+    real rate change. Assets: equities (NASDAQCOM), full Treasury curve (1Y/2Y/5Y/
+    7Y/10Y/20Y/30Y), HY/IG credit (when history sufficient), WTI crude, Brent crude,
+    EUR/USD, JPY/USD.
+
+    Full-sample hit: any Shanken-corrected |t| >= 2.0.
+    Regime-conditional hit: any factor premium flips sign across NBER recession/
+    expansion or high/low inflation regimes with |t_diff| >= 2.0. Motivated by
+    Bianchi-Faccini-Melosi (2023) and Koijen-Lustig-Van Nieuwerburgh (2017).
     """
     import numpy as _np
-    from src.analytics.stats import fama_macbeth_factor_model
+    from src.analytics.stats import fama_macbeth_factor_model, FamaMacBethResult
 
     hits: list[DetectorHit] = []
     skipped: list[tuple[str, str]] = []
@@ -697,7 +703,8 @@ def scan_cross_asset_factors() -> tuple[list[DetectorHit], pd.DataFrame, list[tu
     # April 2023 due to ICE BofA licensing changes. BAA10Y goes back to 1986.
     baa10y  = _monthly_end("BAA10Y")
 
-    _MIN_OBS = 36  # must match min_obs passed to fama_macbeth_factor_model below
+    _MIN_OBS = 36        # floor for full-sample estimation
+    _REGIME_MIN_OBS = 24 # lower floor for regime sub-samples (noisier by design)
 
     factor_series: dict[str, pd.Series] = {}
     if cpi is not None and len(cpi) > 24:
@@ -725,21 +732,26 @@ def scan_cross_asset_factors() -> tuple[list[DetectorHit], pd.DataFrame, list[tu
     # --- Build asset returns (% per month) ---
     asset_series: dict[str, pd.Series] = {}
 
-    sp500 = _monthly_end("SP500")
-    if sp500 is not None and len(sp500) > 24 and (sp500 > 0).all():
-        asset_series["equities"] = (_np.log(sp500 / sp500.shift(1)) * 100).dropna()
+    # Equities: NASDAQCOM preferred (available from 1971) over SP500 (FRED history from 2016).
+    nasdaq = _monthly_end("NASDAQCOM")
+    if nasdaq is not None and len(nasdaq) > 24 and (nasdaq > 0).all():
+        asset_series["equities"] = (_np.log(nasdaq / nasdaq.shift(1)) * 100).dropna()
 
-    dgs2 = _monthly_end("DGS2")
-    if dgs2 is not None and len(dgs2) > 24:
-        asset_series["treasury_2y"] = (-1.9 * dgs2.diff()).dropna()
-
-    dgs10 = _monthly_end("DGS10")
-    if dgs10 is not None and len(dgs10) > 24:
-        asset_series["treasury_10y"] = (-8.5 * dgs10.diff()).dropna()
-
-    dgs30 = _monthly_end("DGS30")
-    if dgs30 is not None and len(dgs30) > 24:
-        asset_series["treasury_30y"] = (-18.0 * dgs30.diff()).dropna()
+    # Treasury curve: duration-weighted price-return approximation (return ≈ -D_mod × Δyield).
+    # Modified durations: 1Y≈1.0, 2Y≈1.9, 5Y≈4.6, 7Y≈6.3, 10Y≈8.5, 20Y≈13.0, 30Y≈18.0.
+    _treasury_assets = [
+        ("DGS1",  "treasury_1y",  -1.0),
+        ("DGS2",  "treasury_2y",  -1.9),
+        ("DGS5",  "treasury_5y",  -4.6),
+        ("DGS7",  "treasury_7y",  -6.3),
+        ("DGS10", "treasury_10y", -8.5),
+        ("DGS20", "treasury_20y", -13.0),
+        ("DGS30", "treasury_30y", -18.0),
+    ]
+    for _sid, _label, _dur in _treasury_assets:
+        _s = _monthly_end(_sid)
+        if _s is not None and len(_s) > 24:
+            asset_series[_label] = (_dur * _s.diff()).dropna()
 
     # ICE BofA series (BAMLH0A0HYM2, BAMLC0A0CM) only have FRED history from April 2023.
     # Require _MIN_OBS + 2 months before including them as assets so they don't constrain
@@ -754,47 +766,143 @@ def scan_cross_asset_factors() -> tuple[list[DetectorHit], pd.DataFrame, list[tu
 
     wti = _monthly_end("DCOILWTICO")
     if wti is not None and len(wti) > 24 and (wti > 0).all():
-        asset_series["crude_oil"] = (_np.log(wti / wti.shift(1)) * 100).dropna()
+        asset_series["crude_oil_wti"] = (_np.log(wti / wti.shift(1)) * 100).dropna()
 
-    gold = _monthly_end("GOLDAMGBD228NLBM")
-    if gold is not None and len(gold) > 24 and (gold > 0).all():
-        asset_series["gold"] = (_np.log(gold / gold.shift(1)) * 100).dropna()
+    brent = _monthly_end("DCOILBRENTEU")
+    if brent is not None and len(brent) > 24 and (brent > 0).all():
+        asset_series["crude_oil_brent"] = (_np.log(brent / brent.shift(1)) * 100).dropna()
+
+    # FX: log return of spot rate (positive = USD appreciation)
+    eur = _monthly_end("DEXUSEU")   # USD per EUR: positive = EUR stronger
+    if eur is not None and len(eur) > 24 and (eur > 0).all():
+        asset_series["fx_eur_usd"] = (_np.log(eur / eur.shift(1)) * 100).dropna()
+
+    jpy = _monthly_end("DEXJPUS")   # JPY per USD: positive = USD stronger (invert for USD return)
+    if jpy is not None and len(jpy) > 24 and (jpy > 0).all():
+        asset_series["fx_usd_jpy"] = (-_np.log(jpy / jpy.shift(1)) * 100).dropna()
 
     if len(asset_series) < 4:
         skipped.append(("cross_asset_factors", f"too few assets: {list(asset_series)}"))
         return hits, pd.DataFrame(), skipped
 
     returns_df = pd.DataFrame(asset_series).dropna()
-    result = fama_macbeth_factor_model(returns_df, factors_df, min_obs=36)
+    result = fama_macbeth_factor_model(returns_df, factors_df, min_obs=_MIN_OBS)
 
     if not result.fit_ok:
         skipped.append(("cross_asset_factors", result.error))
         return hits, pd.DataFrame(), skipped
 
-    # Persist all factor premia regardless of significance
-    for f in result.factor_names:
-        rows.append({
-            "factor_name": f,
-            "premium_pct_monthly": result.factor_premia_pct_monthly.get(f, float("nan")),
-            "t_stat_ols": result.t_stats_ols.get(f, float("nan")),
-            "t_stat_shanken": result.t_stats_shanken.get(f, float("nan")),
-            "shanken_c": result.shanken_c,
-            "r_squared_xsec": result.r_squared_xsec,
-            "n_assets": result.n_assets,
-            "n_obs": result.n_obs,
-            "run_date": today_str,
-        })
+    # --- Helper: per-factor diff t-stat between two sub-sample results ---
+    def _diff_t(r_a: FamaMacBethResult, r_b: FamaMacBethResult) -> dict[str, tuple[float, float]]:
+        """Returns {factor: (premium_diff, t_diff)} where diff = premium_a - premium_b.
+        Assumes independence of sub-samples (non-overlapping periods).
+        """
+        out: dict[str, tuple[float, float]] = {}
+        for f in r_a.factor_names:
+            prem_a = r_a.factor_premia_pct_monthly.get(f, float("nan"))
+            prem_b = r_b.factor_premia_pct_monthly.get(f, float("nan"))
+            se_a   = r_a.se_shanken.get(f, float("nan"))
+            se_b   = r_b.se_shanken.get(f, float("nan"))
+            if any(_np.isnan(x) for x in (prem_a, prem_b, se_a, se_b)):
+                continue
+            se_comb = float(_np.sqrt(se_a ** 2 + se_b ** 2))
+            if se_comb < 1e-10:
+                continue
+            diff  = prem_a - prem_b
+            t_diff = diff / se_comb
+            out[f] = (round(diff, 4), round(t_diff, 3))
+        return out
 
+    # --- Persist full-sample rows ---
+    def _append_rows(r: FamaMacBethResult, regime: str) -> None:
+        for f in r.factor_names:
+            rows.append({
+                "regime": regime,
+                "factor_name": f,
+                "premium_pct_monthly": r.factor_premia_pct_monthly.get(f, float("nan")),
+                "t_stat_ols": r.t_stats_ols.get(f, float("nan")),
+                "t_stat_shanken": r.t_stats_shanken.get(f, float("nan")),
+                "shanken_c": r.shanken_c,
+                "r_squared_xsec": r.r_squared_xsec,
+                "n_assets": r.n_assets,
+                "n_obs": r.n_obs,
+                "run_date": today_str,
+            })
+
+    _append_rows(result, "full")
+
+    # --- Regime-conditional splits ---
+    # Compute the aligned estimation index (same logic as inside fama_macbeth_factor_model).
+    aligned_idx = pd.concat([returns_df, factors_df], axis=1).dropna().index
+    # Subset both DataFrames to the common index so boolean masks align correctly.
+    returns_aligned = returns_df.loc[aligned_idx]
+    factors_aligned = factors_df.loc[aligned_idx]
+
+    # NBER recession/expansion
+    usrec = _monthly_end("USREC")
+    rec_result: FamaMacBethResult | None = None
+    exp_result: FamaMacBethResult | None = None
+    if usrec is not None:
+        rec_mask = usrec.reindex(aligned_idx).fillna(0).astype(bool)
+        exp_mask = ~rec_mask
+        if rec_mask.sum() >= _REGIME_MIN_OBS:
+            r = fama_macbeth_factor_model(
+                returns_aligned.loc[rec_mask], factors_aligned.loc[rec_mask], min_obs=_REGIME_MIN_OBS,
+            )
+            if r.fit_ok:
+                rec_result = r
+                _append_rows(r, "recession")
+        else:
+            skipped.append(("cross_asset_factors", f"recession sub-sample too small ({int(rec_mask.sum())} obs)"))
+        if exp_mask.sum() >= _REGIME_MIN_OBS:
+            r = fama_macbeth_factor_model(
+                returns_aligned.loc[exp_mask], factors_aligned.loc[exp_mask], min_obs=_REGIME_MIN_OBS,
+            )
+            if r.fit_ok:
+                exp_result = r
+                _append_rows(r, "expansion")
+
+    # High / low inflation (CPI YoY > 3%)
+    hi_result: FamaMacBethResult | None = None
+    lo_result: FamaMacBethResult | None = None
+    if cpi is not None and len(cpi) > 13:
+        cpi_yoy = (cpi / cpi.shift(12) - 1) * 100
+        hi_mask = cpi_yoy.reindex(aligned_idx).ffill().fillna(0) > 3.0
+        lo_mask = ~hi_mask
+        if hi_mask.sum() >= _REGIME_MIN_OBS:
+            r = fama_macbeth_factor_model(
+                returns_aligned.loc[hi_mask], factors_aligned.loc[hi_mask], min_obs=_REGIME_MIN_OBS,
+            )
+            if r.fit_ok:
+                hi_result = r
+                _append_rows(r, "high_inflation")
+        else:
+            skipped.append(("cross_asset_factors", f"high-inflation sub-sample too small ({int(hi_mask.sum())} obs)"))
+        if lo_mask.sum() >= _REGIME_MIN_OBS:
+            r = fama_macbeth_factor_model(
+                returns_aligned.loc[lo_mask], factors_aligned.loc[lo_mask], min_obs=_REGIME_MIN_OBS,
+            )
+            if r.fit_ok:
+                lo_result = r
+                _append_rows(r, "low_inflation")
+
+    # --- Compute regime diffs for evidence enrichment ---
+    regime_diffs: dict[str, dict[str, tuple[float, float]]] = {}
+    if rec_result is not None and exp_result is not None:
+        regime_diffs["recession_vs_expansion"] = _diff_t(rec_result, exp_result)
+    if hi_result is not None and lo_result is not None:
+        regime_diffs["high_vs_low_inflation"] = _diff_t(hi_result, lo_result)
+
+    # --- Fire: full-sample significance ---
     sig_factors = [
         f for f in result.factor_names
         if abs(result.t_stats_shanken.get(f, 0.0)) >= 2.0
     ]
-
     if sig_factors:
         max_t = max(abs(result.t_stats_shanken.get(f, 0.0)) for f in sig_factors)
         hits.append(DetectorHit(
             kind="cross_asset_factor",
-            series_ids=("CPIAUCSL", "PAYEMS", "BAA10Y", "DFII10", "SP500", "DGS10"),
+            series_ids=("CPIAUCSL", "PAYEMS", "BAA10Y", "DFII10", "NASDAQCOM", "DGS10"),
             window=f"full history ({result.n_obs} months)",
             score=min(max_t / 4.0, 1.0),
             evidence={
@@ -809,12 +917,55 @@ def scan_cross_asset_factors() -> tuple[list[DetectorHit], pd.DataFrame, list[tu
                 "significant_factors": sig_factors,
                 "asset_betas": result.asset_betas,
                 "asset_avg_returns_pct_ann": result.asset_avg_returns_pct_ann,
+                "regime_diffs": regime_diffs,
             },
             tags=("cross_asset", "macro", "factor_model"),
         ))
 
+    # --- Fire: regime flip (sign reversal with |t_diff| >= 2.0) ---
+    for comparison_label, diffs in regime_diffs.items():
+        flip_factors = [
+            f for f, (diff, t_diff) in diffs.items()
+            if abs(t_diff) >= 2.0
+        ]
+        if flip_factors:
+            max_t_diff = max(abs(diffs[f][1]) for f in flip_factors)
+            # Include which regime had positive vs negative premium for each flipping factor
+            flip_detail: dict[str, dict] = {}
+            if comparison_label == "recession_vs_expansion" and rec_result and exp_result:
+                for f in flip_factors:
+                    flip_detail[f] = {
+                        "recession": rec_result.factor_premia_pct_monthly.get(f),
+                        "expansion": exp_result.factor_premia_pct_monthly.get(f),
+                        "t_diff": diffs[f][1],
+                        "n_recession": rec_result.n_obs,
+                        "n_expansion": exp_result.n_obs,
+                    }
+            elif comparison_label == "high_vs_low_inflation" and hi_result and lo_result:
+                for f in flip_factors:
+                    flip_detail[f] = {
+                        "high_inflation": hi_result.factor_premia_pct_monthly.get(f),
+                        "low_inflation": lo_result.factor_premia_pct_monthly.get(f),
+                        "t_diff": diffs[f][1],
+                        "n_high_inflation": hi_result.n_obs,
+                        "n_low_inflation": lo_result.n_obs,
+                    }
+            hits.append(DetectorHit(
+                kind="cross_asset_factor",
+                series_ids=("CPIAUCSL", "PAYEMS", "BAA10Y", "DFII10", "NASDAQCOM", "DGS10"),
+                window=f"{comparison_label} regime split ({result.n_obs} months total)",
+                score=min(max_t_diff / 4.0, 1.0),
+                evidence={
+                    "regime_comparison": comparison_label,
+                    "flip_factors": flip_factors,
+                    "flip_detail": flip_detail,
+                    "all_diffs": {f: {"diff": d, "t_diff": t} for f, (d, t) in diffs.items()},
+                },
+                tags=("cross_asset", "macro", "factor_model", "regime"),
+            ))
+
     stats_df = pd.DataFrame(rows) if rows else pd.DataFrame(columns=[
-        "factor_name", "premium_pct_monthly", "t_stat_ols", "t_stat_shanken",
+        "regime", "factor_name", "premium_pct_monthly", "t_stat_ols", "t_stat_shanken",
         "shanken_c", "r_squared_xsec", "n_assets", "n_obs", "run_date",
     ])
     return hits, stats_df, skipped
@@ -1333,36 +1484,59 @@ def _finding_from_hit(hit: DetectorHit, today: date) -> Finding:
             f"curvature {ev['curvature_z']:+.2f}."
         )
     elif hit.kind == "cross_asset_factor":
-        sig = ev["significant_factors"]
-        n_assets = ev["n_assets"]
-        n_obs = ev["n_obs"]
-        c = ev["shanken_c"]
-        r2 = ev["r_squared_xsec"]
-        # Most significant factor by |Shanken t|
-        max_f = max(sig, key=lambda f: abs(ev["t_stats_shanken"].get(f, 0.0)))
-        max_prem = ev["factor_premia_pct_monthly"].get(max_f, 0.0)
-        max_t_s = ev["t_stats_shanken"].get(max_f, 0.0)
-        title = (
-            f"Cross-asset factor model ({n_assets} assets, {n_obs}m): "
-            f"{len(sig)} macro factor(s) significantly priced (Shanken)"
-        )
         slug = make_slug("cross_asset_factor", hit.series_ids)
-        prem_desc = "; ".join(
-            f"{f}={ev['factor_premia_pct_monthly'].get(f, 0.0):+.3f}%/mo "
-            f"(t_S={ev['t_stats_shanken'].get(f, 0.0):+.2f})"
-            for f in sig
-        )
-        claim = (
-            f"Fama-MacBeth two-pass cross-sectional regression ({n_obs} months, {n_assets} assets: "
-            f"equities, 2Y/10Y/30Y Treasuries, HY/IG credit, WTI, gold) finds {len(sig)} "
-            f"statistically significant macro factor premium(s) with Shanken (1992) EIV correction "
-            f"(c={c:.2f}): {prem_desc}. "
-            f"Cross-sectional R² = {r2:.1%}. "
-            f"Dominant factor: {max_f} at {max_prem:+.3f}%/month "
-            f"({max_prem * 12 * 100:+.0f}bp/year), Shanken t = {max_t_s:+.2f}. "
-            f"Factors: inflation surprise (CPI MoM demeaned), growth surprise (PAYEMS MoM demeaned), "
-            f"credit stress (HY OAS monthly change), real rate change (DFII10 monthly change)."
-        )
+        if "significant_factors" in ev:
+            # Full-sample hit
+            sig = ev["significant_factors"]
+            n_assets = ev["n_assets"]
+            n_obs = ev["n_obs"]
+            c = ev["shanken_c"]
+            r2 = ev["r_squared_xsec"]
+            max_f = max(sig, key=lambda f: abs(ev["t_stats_shanken"].get(f, 0.0)))
+            max_prem = ev["factor_premia_pct_monthly"].get(max_f, 0.0)
+            max_t_s = ev["t_stats_shanken"].get(max_f, 0.0)
+            title = (
+                f"Cross-asset factor model ({n_assets} assets, {n_obs}m): "
+                f"{len(sig)} macro factor(s) significantly priced (Shanken)"
+            )
+            prem_desc = "; ".join(
+                f"{f}={ev['factor_premia_pct_monthly'].get(f, 0.0):+.3f}%/mo "
+                f"(t_S={ev['t_stats_shanken'].get(f, 0.0):+.2f})"
+                for f in sig
+            )
+            claim = (
+                f"Fama-MacBeth two-pass cross-sectional regression ({n_obs} months, {n_assets} assets: "
+                f"equities, full Treasury curve, HY/IG credit, WTI/Brent crude, EUR/USD, JPY/USD) "
+                f"finds {len(sig)} statistically significant macro factor premium(s) with Shanken "
+                f"(1992) EIV correction (c={c:.2f}): {prem_desc}. "
+                f"Cross-sectional R² = {r2:.1%}. "
+                f"Dominant factor: {max_f} at {max_prem:+.3f}%/month "
+                f"({max_prem * 12 * 100:+.0f}bp/year), Shanken t = {max_t_s:+.2f}. "
+                f"Factors: inflation surprise (CPI MoM demeaned), growth surprise (PAYEMS MoM demeaned), "
+                f"credit stress (Baa spread monthly change), real rate change (DFII10 monthly change)."
+            )
+        else:
+            # Regime-flip hit
+            regime_cmp = ev.get("regime_comparison", "unknown")
+            flip_factors = ev.get("flip_factors", [])
+            all_diffs = ev.get("all_diffs", {})
+            flip_detail = ev.get("flip_detail", {})
+            title = (
+                f"Cross-asset factor model: regime flip detected "
+                f"({regime_cmp.replace('_vs_', ' vs ')}, "
+                f"{len(flip_factors)} factor(s))"
+            )
+            slug = make_slug("cross_asset_factor_regime", hit.series_ids, extra=regime_cmp)
+            diff_desc = "; ".join(
+                f"{f}: diff={all_diffs[f]['diff']:+.3f}%/mo, t_diff={all_diffs[f]['t_diff']:+.2f}"
+                for f in flip_factors
+            )
+            claim = (
+                f"Fama-MacBeth factor premia differ significantly across {regime_cmp.replace('_vs_', ' vs ')} "
+                f"sub-samples (|t_diff| ≥ 2.0, using Shanken SEs): {diff_desc}. "
+                f"Detail: {flip_detail}. "
+                f"Motivated by Bianchi-Faccini-Melosi (2023) and Koijen-Lustig-Van Nieuwerburgh (2017)."
+            )
     else:
         title = f"Unknown hit kind: {hit.kind}"
         slug = make_slug(hit.kind, hit.series_ids)

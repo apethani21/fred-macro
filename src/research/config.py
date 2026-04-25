@@ -13,7 +13,7 @@ from __future__ import annotations
 # Core macro series grouped by role. Order within each group is cosmetic.
 CORE_UNIVERSE: dict[str, tuple[str, ...]] = {
     "policy_rate": ("DFF", "FEDFUNDS", "DFEDTARU", "DFEDTARL", "SOFR", "IORB"),
-    "treasury_yields": ("DGS3MO", "DGS2", "DGS5", "DGS10", "DGS30"),
+    "treasury_yields": ("DGS3MO", "DGS1", "DGS2", "DGS3", "DGS5", "DGS7", "DGS10", "DGS20", "DGS30"),
     "curve_slopes": ("T10Y2Y", "T10Y3M"),
     "real_rates": ("DFII5", "DFII10"),
     "breakevens": ("T5YIE", "T10YIE"),
@@ -22,7 +22,9 @@ CORE_UNIVERSE: dict[str, tuple[str, ...]] = {
     "growth": ("GDPC1", "INDPRO", "RRSFS", "UMCSENT"),
     "credit_spreads": ("BAMLH0A0HYM2", "AAA10Y", "BAA10Y"),
     "volatility_equity": ("VIXCLS", "SP500"),
-    "commodities_fx": ("DCOILWTICO", "DTWEXBGS"),
+    "commodities_fx": ("DCOILWTICO", "DCOILBRENTEU", "DHHNGSP", "DTWEXBGS"),
+    "fx": ("DEXUSEU", "DEXJPUS", "DEXUSUK", "DEXUSAL"),
+    "equity_indices": ("NASDAQCOM",),
     "recession_flag": ("USREC",),
     # ECB / euro area
     "ea_policy_rate": ("ECB.DFR", "ECB.ESTR"),
@@ -54,7 +56,8 @@ NOTABLE_MOVE_WATCHLIST: tuple[str, ...] = (
     "T10Y2Y", "T10Y3M", "DGS10", "DGS2", "DGS30", "DFII10", "T10YIE",
     "VIXCLS", "BAMLH0A0HYM2", "AAA10Y", "BAA10Y",
     "UNRATE", "UMCSENT",
-    "DCOILWTICO", "DTWEXBGS", "SP500",
+    "DCOILWTICO", "DCOILBRENTEU", "DHHNGSP", "DTWEXBGS", "NASDAQCOM",
+    "DEXUSEU", "DEXJPUS", "DEXUSUK", "DEXUSAL",
     "SOFR", "DFF",
     # ECB / euro area
     "ECB.DFR", "ECB.BTPBUND.SPREAD", "ECB.BUND.SLOPE", "ECB.HICP.EA.CORE",

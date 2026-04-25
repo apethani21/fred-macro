@@ -828,6 +828,7 @@ class FamaMacBethResult:
     factor_premia_pct_monthly: dict[str, float]   # premium in % per month
     t_stats_ols: dict[str, float]                 # uncorrected OLS t-stats
     t_stats_shanken: dict[str, float]             # Shanken (1992) EIV-corrected
+    se_shanken: dict[str, float]                  # Shanken-corrected standard errors
     shanken_c: float                              # correction factor 1 + λ'Σ_F⁻¹λ
     r_squared_xsec: float                         # cross-sectional R²
     n_assets: int
@@ -867,6 +868,7 @@ def fama_macbeth_factor_model(
             factor_premia_pct_monthly={},
             t_stats_ols={},
             t_stats_shanken={},
+            se_shanken={},
             shanken_c=float("nan"),
             r_squared_xsec=float("nan"),
             n_assets=len(asset_cols),
@@ -904,6 +906,7 @@ def fama_macbeth_factor_model(
             factor_premia_pct_monthly={},
             t_stats_ols={},
             t_stats_shanken={},
+            se_shanken={},
             shanken_c=float("nan"),
             r_squared_xsec=float("nan"),
             n_assets=len(asset_cols),
@@ -929,12 +932,15 @@ def fama_macbeth_factor_model(
         c = 1.0
 
     shanken_t = {f: round(ols_t[f] / float(np.sqrt(c)), 3) for f in factor_cols}
+    shanken_se = {f: round(float(xsec.bse.get(f, float("nan"))) * float(np.sqrt(c)), 6)
+                  for f in factor_cols}
 
     return FamaMacBethResult(
         factor_names=factor_cols,
         factor_premia_pct_monthly={f: round(premia[f], 4) for f in factor_cols},
         t_stats_ols={f: round(ols_t[f], 3) for f in factor_cols},
         t_stats_shanken=shanken_t,
+        se_shanken=shanken_se,
         shanken_c=round(c, 4),
         r_squared_xsec=round(float(xsec.rsquared), 4),
         n_assets=len(asset_cols),
