@@ -412,6 +412,110 @@ RELATIONSHIPS: tuple[Relationship, ...] = (
         ),
         tags=("policy", "labor"),
     ),
+
+    # ── FX / cross-asset ─────────────────────────────────────────────────────
+
+    Relationship(
+        name="EUR/USD vs BTP-Bund spread",
+        series=("DEXUSEU", "ECB.BTPBUND.SPREAD"),
+        kind="correlation",
+        basis=(
+            "When Italian sovereign risk rises (BTP-Bund widens), the euro typically weakens — "
+            "capital flight from the EA periphery reduces demand for euros. "
+            "De Santis (2015) documents spread widening leads EUR/USD depreciation by ~5-10 days "
+            "during stress episodes. The relationship strengthens in fragmentation episodes and "
+            "fades in benign periods. A correlation sign flip (euro strengthening alongside BTP-Bund "
+            "widening) would signal ECB credibility is holding or OMT/TPI backstop is being priced."
+        ),
+        tags=("fx", "europe", "sovereign", "cross-asset"),
+    ),
+    Relationship(
+        name="EUR/USD vs ECB-Fed rate differential",
+        series=("DEXUSEU", "ECB.DFR"),
+        kind="correlation",
+        basis=(
+            "The EUR/USD should under UIP reflect the ECB-Fed rate differential. "
+            "Empirically, the correlation holds weakly in normal times and inverts in risk-off episodes "
+            "when carry trades unwind. A widening Fed-over-ECB differential is USD-positive (carries "
+            "dollar demand from rate-differential arbitrage); narrowing is USD-negative. "
+            "The 2022-24 episode saw the widest Fed-over-ECB differential on record at ~250bp, "
+            "contributing to EUR/USD trading below parity (0.96) in September 2022."
+        ),
+        tags=("fx", "policy", "europe", "ecb"),
+    ),
+    Relationship(
+        name="JPY/USD vs DFF rate differential proxy",
+        series=("DEXJPUS", "DFF"),
+        kind="correlation",
+        basis=(
+            "The JPY is the classic carry trade funding currency. "
+            "When the US-Japan rate differential widens (Fed hikes, BoJ holds), JPY weakens "
+            "(investors borrow yen to buy higher-yielding USD assets). "
+            "Sudden JPY appreciation (>5% in 20 days) signals a carry-trade unwind, which "
+            "typically coincides with credit stress widening (BAA10Y rising) and equity drawdowns. "
+            "The August 2024 BoJ hike surprise triggered one of the largest single-day "
+            "JPY carry unwinds since 2008. DEXJPUS is JPY per USD — appreciation = falling series."
+        ),
+        tags=("fx", "carry", "cross-asset"),
+    ),
+    Relationship(
+        name="NASDAQCOM vs VIX",
+        series=("NASDAQCOM", "VIXCLS"),
+        kind="correlation",
+        basis=(
+            "Equity price and implied vol are inversely correlated — this is the leverage effect "
+            "(Bekaert, Hoerova & Lo Duca, 2013). VIX responds roughly 1.5x more to negative equity "
+            "shocks than to positive ones of the same magnitude (asymmetric response). "
+            "The standard negative correlation (VIX up = NASDAQCOM down) breaks down in sustained "
+            "rallies where VIX compresses more slowly than equities rise. "
+            "Regime-conditional: the correlation is most negative in high-vol regimes (VIX > 25) "
+            "and weakest in low-vol complacency regimes (VIX < 15)."
+        ),
+        tags=("volatility", "equity", "cross-asset"),
+    ),
+    Relationship(
+        name="Broad dollar vs WTI crude",
+        series=("DTWEXBGS", "DCOILWTICO"),
+        kind="correlation",
+        basis=(
+            "Oil is priced in USD. Dollar appreciation compresses USD oil prices mechanically "
+            "(same physical oil costs more in euros/yen, so USD price falls). "
+            "Fratzscher, Schneider & Van Robays (2014) document this negative dollar-commodity nexus "
+            "and show it strengthens in risk-off regimes (VIX > 25) when both dollar safe-haven "
+            "demand and commodity demand collapse simultaneously. "
+            "The correlation reverses in periods of dollar strength driven by US-specific growth "
+            "outperformance (dollar up + oil up = US demand-driven)."
+        ),
+        tags=("fx", "commodities", "cross-asset"),
+    ),
+    Relationship(
+        name="Brent crude vs EUR/USD",
+        series=("DCOILBRENTEU", "DEXUSEU"),
+        kind="correlation",
+        basis=(
+            "Europe imports >85% of its energy. A sharp rise in Brent worsens the EA trade "
+            "balance (more USD outflows for energy imports), putting pressure on the euro. "
+            "ECB Economic Bulletin (2022) documents Brent as a stronger driver of EA HICP than "
+            "Henry Hub is of US CPI, due to the higher import dependence. "
+            "Brent-driven EUR weakness is a double tightening for the EA: higher energy costs "
+            "AND a weaker exchange rate that further raises import prices."
+        ),
+        tags=("commodities", "fx", "europe"),
+    ),
+    Relationship(
+        name="Henry Hub vs US industrial production",
+        series=("DHHNGSP", "INDPRO"),
+        kind="correlation",
+        basis=(
+            "Henry Hub natural gas (DHHNGSP) is the US benchmark for industrial energy costs. "
+            "Nat gas is the primary fuel for petrochemicals, fertilizers, and heavy manufacturing. "
+            "Higher Henry Hub raises input costs and compresses margins in energy-intensive industries, "
+            "lagging industrial production by 1-3 months as firms cut output. "
+            "Post-2021, US Henry Hub decoupled from European TTF as US LNG exports scaled, "
+            "making DHHNGSP a domestic US energy cost indicator rather than a global proxy."
+        ),
+        tags=("commodities", "growth"),
+    ),
 )
 
 

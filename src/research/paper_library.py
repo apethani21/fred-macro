@@ -465,6 +465,39 @@ GROUP_D: list[Paper] = [
         notes="Systemic risk signal priced across asset classes. FRED credit spread indices as proxies; exact replication needs CDS microdata.",
         newsletter_date="9/8/2023",
     ),
+    Paper(
+        title="The Cross-Section and Time Series of Stock and Bond Returns (Koijen, Lustig & Van Nieuwerburgh, JME 2017)",
+        group="D",
+        methodology="Two-factor model (inflation news, real rate news); Fama-MacBeth cross-sectional pricing across stocks and bonds; time-series regime conditioning; estimates factor premia and their variation",
+        difficulty=4,
+        fred_implementability=5,
+        macro_relevance=5,
+        key_series=["NASDAQCOM", "DGS1", "DGS2", "DGS5", "DGS10", "DGS30", "DFII10", "T10YIE", "CPIAUCSL", "BAMLH0A0HYM2"],
+        notes="Directly validates M12 results. Their inflation_surprise lambda ≈ −2.4% annually — consistent with M12 Shanken t=−6.1 sign and magnitude. Explains: (1) why λ_inflation < 0 (hedging demand), (2) why stock-bond correlation switches sign, (3) how regime-conditional factor premia differ in anchored vs unanchored inflation. NBER WP 23438; authors' websites have final version.",
+        newsletter_date=None,
+    ),
+    Paper(
+        title="Nonlinearity and Flight to Safety in the Risk-Return Tradeoff for Stocks and Bonds (Adrian, Crump & Vogt, FRBNY SR 723, 2019)",
+        group="D",
+        methodology="Predictive quantile regressions of stock and bond returns; nonparametric regime detection; documents stock-bond correlation sign change episodes with VIX as predictor",
+        difficulty=3,
+        fred_implementability=5,
+        macro_relevance=5,
+        key_series=["NASDAQCOM", "DGS10", "VIXCLS", "T10YIE", "BAMLH0A0HYM2"],
+        notes="Key reference for stock-bond correlation regime analysis. Specific finding: correlation flipped from +0.4 to −0.6 in 1998 LTCM, 2008 GFC, 2011 euro crisis. Correlation predictable from VIX level. Bai-Perron breaks on NASDAQCOM-DGS10 rolling correlation on FRED directly test this. FRBNY SR 723 freely available.",
+        newsletter_date=None,
+    ),
+    Paper(
+        title="A Fiscal Theory of Persistent Inflation (Bianchi, Faccini & Melosi, Chicago Fed WP 2023-37)",
+        group="D",
+        methodology="New-Keynesian model with fiscal regime switching; identifies monetary-dominant vs fiscal-dominant regimes empirically; shows inflation betas across assets change sign with regime",
+        difficulty=5,
+        fred_implementability=3,
+        macro_relevance=5,
+        key_series=["CPIAUCSL", "T10YIE", "DFII10", "DFF", "NASDAQCOM"],
+        notes="Regime-conditional inflation premium theory. Key implication for M12: inflation_surprise lambda should be more negative in fiscal-dominant/unanchored regimes (post-2020) than in anchored regimes (2010-19). Justifies regime-conditional FM splits. Chicago Fed WP freely available. Advanced but highly relevant for interpreting current M12 cross-sectional results.",
+        newsletter_date=None,
+    ),
 ]
 
 # ---------------------------------------------------------------------------
@@ -780,6 +813,17 @@ GROUP_G: list[Paper] = [
         notes="Risk premium estimation uncertainty—relevant for calibrating confidence in valuation signals. ERP from FRED data directly. Underappreciated practical insight.",
         newsletter_date="6/30/2023",
     ),
+    Paper(
+        title="Risk, Uncertainty and Monetary Policy (Bekaert, Hoerova & Lo Duca, ECB WP 1565, 2013)",
+        group="G",
+        methodology="VIX decomposed into risk aversion and uncertainty via GMM; tests Fed policy shock → VIX decomposition response; documents asymmetric equity-vol response (1.5x for negative vs positive shocks)",
+        difficulty=4,
+        fred_implementability=4,
+        macro_relevance=5,
+        key_series=["VIXCLS", "NASDAQCOM", "DFF", "BAMLH0A0HYM2"],
+        notes="Key reference for NASDAQCOM-VIX asymmetric correlation. Finding: VIX responds 1.5x more to equity drawdowns than to rallies of the same size. Directly testable on FRED: regime-conditional Spearman correlation of NASDAQCOM returns on VIX changes for positive vs negative return days. ECB WP freely available.",
+        newsletter_date=None,
+    ),
 ]
 
 # ---------------------------------------------------------------------------
@@ -895,6 +939,61 @@ GROUP_H: list[Paper] = [
         key_series=["DFF", "DGS2", "DGS10", "DTWEXBGS"],
         notes="Carry factor = interest rate differential (FRED). Value = PPP deviation. Momentum from FX return series. Industry collaboration paper—strong practitioner orientation.",
         newsletter_date="5/12/2023",
+    ),
+    Paper(
+        title="Common Risk Factors in Currency Markets (Lustig, Roussanov & Verdelhan, RFS 2011)",
+        group="H",
+        methodology="Fama-MacBeth two-pass CSR on G10 currency portfolios sorted by interest rate; identifies dollar factor (HML-FX) explaining 80%+ of bilateral FX variation; cross-sectional pricing tests",
+        difficulty=4,
+        fred_implementability=4,
+        macro_relevance=5,
+        key_series=["DTWEXBGS", "DEXUSEU", "DEXJPUS", "DEXUSAL", "DFF", "BAA10Y"],
+        notes="Foundational paper for FX factor model. Dollar factor correlated with global equity returns and credit spreads — explains why DTWEXBGS co-moves with BAA10Y. EUR/USD and JPY/USD in M12 load on the same dollar factor; their M12 betas to credit_stress reflect this. RFS published version accessible via author websites.",
+        newsletter_date=None,
+    ),
+    Paper(
+        title="The Share of Systematic Variation in Bilateral Exchange Rates (Verdelhan, JF 2018)",
+        group="H",
+        methodology="Variance decomposition of bilateral FX returns into common dollar factor and cross-sectional carry component; shows single factor explains 73% of bilateral FX variance",
+        difficulty=3,
+        fred_implementability=4,
+        macro_relevance=5,
+        key_series=["DTWEXBGS", "DEXUSEU", "DEXJPUS", "DEXUSUK", "DEXUSAL"],
+        notes="Key reference for DTWEXBGS as the right macro dollar aggregate. Single dollar factor drives EUR/USD, JPY/USD, AUD/USD together. Correlation structure of DEXUS* series on FRED directly confirms the factor structure (Spearman ρ > 0.75 across bilateral pairs). JF article; WP version on author website.",
+        newsletter_date=None,
+    ),
+    Paper(
+        title="Foreign Safe Asset Demand and the Dollar Exchange Rate (Jiang, Krishnamurthy & Lustig, JF 2021)",
+        group="H",
+        methodology="Structural model of dollar safe-haven demand; tests against FOMC announcement returns and VIX shocks; quantifies: 1 SD VIX shock → ~3% dollar appreciation",
+        difficulty=4,
+        fred_implementability=4,
+        macro_relevance=5,
+        key_series=["DTWEXBGS", "DEXUSEU", "DEXJPUS", "VIXCLS", "DGS10"],
+        notes="Quantifies the safe-haven mechanism in DTWEXBGS-VIX relationship. The 3% per-SD estimate is a directly citable, specific fact. VIX-dollar event study computable from FRED: window around VIX spikes above 30 (2008, 2011, 2015, 2018, 2020, 2022). NBER WP 24439 publicly available.",
+        newsletter_date=None,
+    ),
+    Paper(
+        title="Exchange Rates, Interest Rates, and the Risk Premium (Engel, AEA P&P 2016)",
+        group="H",
+        methodology="Survey of UIP failure and carry trade literature; decomposes forward premium puzzle into expected depreciation and risk premium components; 6-page accessible summary",
+        difficulty=2,
+        fred_implementability=4,
+        macro_relevance=5,
+        key_series=["DEXJPUS", "DEXUSEU", "DEXUSAL", "DFF", "ECB.DFR"],
+        notes="Best accessible summary of UIP failure. Explains carry premium economics in 6 pages. Key fact: JPY/USD carry crashes (appreciation > 5% in 20 days) occur on average 3-4 times per decade. AEA P&P open access. Essential background for interpreting EUR/USD and JPY/USD in M12.",
+        newsletter_date=None,
+    ),
+    Paper(
+        title="Exchange Rate Reconnect (Lilley, Maggiori, Neiman & Schreger, REStat 2022)",
+        group="H",
+        methodology="Capital flow data matched to FX returns; shows UIP holds conditional on bond investor flows but fails unconditionally; identifies regime-switch in UIP during crisis episodes",
+        difficulty=3,
+        fred_implementability=3,
+        macro_relevance=4,
+        key_series=["DEXUSEU", "DEXJPUS", "DFF", "ECB.DFR", "VIXCLS"],
+        notes="Explains why EUR/USD correlates with ECB-Fed differential only in risk-off regimes (carry unwind restores UIP briefly). Practically: EUR/USD-rate differential correlation rises when VIX > 25. FRED series sufficient for regime-conditional correlation test. REStat published version accessible.",
+        newsletter_date=None,
     ),
 ]
 
@@ -1012,11 +1111,56 @@ GROUP_I: list[Paper] = [
         notes="WTI and Brent both on FRED. HMM regime detection with hmmlearn directly implementable. WTI-Brent spread as macro signal (logistics, geopolitics).",
         newsletter_date="9/29/2023",
     ),
+    Paper(
+        title="Not All Oil Price Shocks Are Alike: Disentangling Demand and Supply Shocks in the Crude Oil Market (Kilian, AER 2009)",
+        group="I",
+        methodology="SVAR with three shocks: oil supply disruption, aggregate demand, precautionary demand; identifies via sign restrictions and timing; impulse responses for US CPI, GDP, Fed funds",
+        difficulty=4,
+        fred_implementability=4,
+        macro_relevance=5,
+        key_series=["DCOILWTICO", "DCOILBRENTEU", "CPIAUCSL", "INDPRO", "DFF", "T10YIE"],
+        notes="Foundational oil-macro paper. Key finding: precautionary demand shocks raise CPI reliably; supply shocks and global demand shocks have ambiguous CPI effects. Explains why WTI-T10YIE correlation is unstable in full-sample. FRED WTI and CPI sufficient for time-series tests; exact replication requires global oil production data. AER publicly accessible.",
+        newsletter_date=None,
+    ),
+    Paper(
+        title="Structural Interpretation of VARs with Incomplete Identification: Revisiting Oil Supply and Demand Shocks (Baumeister & Hamilton, AER 2019)",
+        group="I",
+        methodology="Bayesian SVAR with informative prior on structural parameters; updates Kilian (2009) with improved identification; estimates causal effects with full uncertainty quantification",
+        difficulty=5,
+        fred_implementability=3,
+        macro_relevance=5,
+        key_series=["DCOILWTICO", "DCOILBRENTEU", "CPIAUCSL", "INDPRO"],
+        notes="Updates Kilian (2009). Key finding: oil supply shocks (Saudi cuts) raise WTI but may have negative CPI impact via demand destruction. Demand shocks (China growth) have positive CPI impact. Explains sign-dependence of WTI-CPI correlation. Full replication requires global production data; partial test on FRED data possible. AER published version accessible.",
+        newsletter_date=None,
+    ),
+    Paper(
+        title="Causes and Consequences of the Oil Shock of 2007-08 (Hamilton, BPEA 2009)",
+        group="I",
+        methodology="Supply-demand decomposition of 2007-08 WTI surge; regression of global oil consumption on income and price; shows demand-driven mechanism despite no supply shock",
+        difficulty=2,
+        fred_implementability=5,
+        macro_relevance=5,
+        key_series=["DCOILWTICO", "DCOILBRENTEU", "CPIAUCSL", "INDPRO", "GDPC1"],
+        notes="Highly readable episode paper. Key finding: 2007-08 surge ($147/bbl) was demand-driven by EM/China growth, not supply shortage; explains why 2014-15 decline was supply-driven (shale boom). Perfect episodes.md reference. BPEA open access. Asymmetric oil-CPI pass-through documented: price rises pass through faster than declines.",
+        newsletter_date=None,
+    ),
+    Paper(
+        title="Oil Prices, Exchange Rates and Asset Prices (Fratzscher, Schneider & Van Robays, ECB WP 1689, 2014)",
+        group="I",
+        methodology="SVAR identifying oil demand vs supply shocks; separate cross-asset response functions; shows dollar-commodity correlation strengthens in risk-off regimes",
+        difficulty=4,
+        fred_implementability=4,
+        macro_relevance=5,
+        key_series=["DCOILWTICO", "DCOILBRENTEU", "DTWEXBGS", "DGS10", "VIXCLS", "BAMLH0A0HYM2"],
+        notes="Key reference for DTWEXBGS-WTI negative correlation and its regime-dependence. Quantifies: in risk-off episodes (VIX > 25), dollar and oil co-move more strongly in opposite directions. Directly implementable as regime-conditional correlation on FRED. ECB WP freely available.",
+        newsletter_date=None,
+    ),
 ]
 
 # ---------------------------------------------------------------------------
 # Group J: Macro × equity interactions
 # ---------------------------------------------------------------------------
+# [New papers added after knowledge expansion prompt response, 2026-04-26]
 GROUP_J: list[Paper] = [
     Paper(
         title="Macroeconomic Momentum and Cross-Sectional Equity Market Indices",
@@ -1083,6 +1227,28 @@ GROUP_J: list[Paper] = [
         key_series=["DGS10", "DGS2", "SP500"],
         notes="Treasury options required (not on FRED). Bond-equity correlation (DGS10 vs. SP500 daily) as simplified FRED-based version of cross-asset view extraction.",
         newsletter_date="6/30/2023",
+    ),
+    Paper(
+        title="Bad Beta, Good Beta (Campbell & Vuolteenaho, AER 2004)",
+        group="J",
+        methodology="VAR-based decomposition of stock returns into cash-flow news and discount-rate news; cross-sectional regression shows discount-rate beta earns lower premium than cash-flow beta",
+        difficulty=4,
+        fred_implementability=4,
+        macro_relevance=5,
+        key_series=["NASDAQCOM", "SP500", "DGS10", "DFII10", "CPIAUCSL"],
+        notes="Foundational paper for equity-rate sensitivity analysis. Growth stocks have 'bad beta' (discount-rate driven): high correlation with rate changes but lower compensation. Value stocks have 'good beta' (cash-flow driven): priced for higher returns. NASDAQCOM real-rate beta (DFII10.diff) in M12 directly tests this — should be large negative for Nasdaq. AER publicly accessible.",
+        newsletter_date=None,
+    ),
+    Paper(
+        title="The Time Variation in Risk Appetite and Uncertainty (Bekaert, Engstrom & Xu, Management Science 2022)",
+        group="J",
+        methodology="Separates VIX into risk aversion and economic uncertainty components using consumption data; both predict equity returns and spreads; regime-switching structure",
+        difficulty=4,
+        fred_implementability=4,
+        macro_relevance=5,
+        key_series=["VIXCLS", "BAMLH0A0HYM2", "NASDAQCOM", "BAMLC0A0CM", "DFII10"],
+        notes="Key empirical reference for equity risk premium: 100bp HY spread widening → ~−8% contemporaneous equity return. Justifies why credit_stress is the strongest priced factor in M12. VIX decomposition methodology applicable to FRED VIXCLS with FRED consumption data (PCEC96). NBER WP 25673 version publicly available.",
+        newsletter_date=None,
     ),
 ]
 
@@ -1261,6 +1427,28 @@ GROUP_L: list[Paper] = [
         notes="Best single readable reference for the 2010-12 EA crisis. Documents the full causal chain: EMU → current account imbalances → sovereign fragility → bank stress → doom loop. Essential framing for any email covering BTP-Bund, TARGET2, or fragmentation risk. JEP articles are freely available and citable as primary source.",
         newsletter_date=None,
     ),
+    Paper(
+        title="A Measure of Redenomination Risk (De Santis, ECB WP 1785, 2015)",
+        group="L",
+        methodology="Extracts redenomination risk component from EA sovereign CDS spreads; decomposes BTP-Bund into credit risk, liquidity, and redenomination components; validates against EUR/USD and capital flow data",
+        difficulty=4,
+        fred_implementability=3,
+        macro_relevance=5,
+        key_series=["ECB.BTPBUND.SPREAD", "ECB.IT.10Y", "ECB.DE.10Y", "DEXUSEU"],
+        notes="Establishes EUR/USD vs BTP-Bund relationship empirically. BTP-Bund spread widening leads EUR/USD depreciation by ~5-10 days during stress episodes (fragmentation-FX channel). CDS microdata external; ECB.BTPBUND.SPREAD as aggregate measure of the same dynamic. ECB WP freely available.",
+        newsletter_date=None,
+    ),
+    Paper(
+        title="The Impact of the Recent Rise in Energy Prices on Euro Area Inflation (ECB Economic Bulletin 2022)",
+        group="L",
+        methodology="Decomposition of EA HICP into energy vs non-energy components; VAR-based impulse responses of HICP to Brent vs Henry Hub shocks; cross-country heterogeneity in pass-through",
+        difficulty=2,
+        fred_implementability=4,
+        macro_relevance=5,
+        key_series=["ECB.HICP.EA.TOTAL", "ECB.HICP.EA.CORE", "DCOILBRENTEU", "DHHNGSP", "DEXUSEU"],
+        notes="Key reference for Brent-European inflation relationship. EA HICP responds ~2x more strongly to Brent than US CPI responds to WTI, due to import dependence (Europe 85% vs US 40%). Explains why DCOILBRENTEU is more relevant for ECB rate cycle than DCOILWTICO. Also confirms Henry Hub is NOT a European energy proxy. ECB Economic Bulletin 4/2022, freely available.",
+        newsletter_date=None,
+    ),
 ]
 
 # ---------------------------------------------------------------------------
@@ -1358,18 +1546,46 @@ GROUP_M: list[Paper] = [
 ]
 
 # ---------------------------------------------------------------------------
+# Group N: Cross-asset factor pricing — Fama-MacBeth methodology & regime premia
+# ---------------------------------------------------------------------------
+GROUP_N: list[Paper] = [
+    Paper(
+        title="On the Estimation of Beta-Pricing Models (Shanken, RFS 1992)",
+        group="N",
+        methodology="Analytical correction for errors-in-variables in Fama-MacBeth second-pass CSR; derives exact correction factor c = 1 + λ'Σ_F^{-1}λ; shows OLS SEs are downward-biased by factor 1/√c",
+        difficulty=4,
+        fred_implementability=5,
+        macro_relevance=4,
+        key_series=["NASDAQCOM", "DGS10", "DFII10", "BAMLH0A0HYM2", "CPIAUCSL"],
+        notes="The EIV correction underlying M12. For our 4-factor model, c ≈ 1.3–1.5x, so Shanken t-stats are roughly 15-25% smaller than naive OLS. Correction factor is already implemented in fama_macbeth_factor_model(). Essential methodological reference for any M12 output email. RFS published version widely available.",
+        newsletter_date=None,
+    ),
+    Paper(
+        title="Who Should Buy Long-Term Bonds? (Campbell & Viceira, NBER WP 6801, 2001)",
+        group="N",
+        methodology="Dynamic portfolio model with time-varying risk premia; derives analytical solution for long-horizon bond demand; shows short vs long bonds have opposite inflation and real-rate betas",
+        difficulty=4,
+        fred_implementability=4,
+        macro_relevance=5,
+        key_series=["DGS1", "DGS5", "DGS10", "DGS30", "DFII10", "T10YIE", "CPIAUCSL"],
+        notes="Explains term structure of macro risk. DGS3MO/DGS1 should load positively on inflation_surprise (inflation hedges); DGS30 should load negatively (real-rate hedge, inflation loser). Check M12 beta pattern across 7-point Treasury test assets — should follow this maturity gradient. NBER WP freely available.",
+        newsletter_date=None,
+    ),
+]
+
+# ---------------------------------------------------------------------------
 # Full catalog
 # ---------------------------------------------------------------------------
 ALL_PAPERS: list[Paper] = (
     GROUP_A + GROUP_B + GROUP_C + GROUP_D + GROUP_E +
-    GROUP_F + GROUP_G + GROUP_H + GROUP_I + GROUP_J + GROUP_K + GROUP_L + GROUP_M
+    GROUP_F + GROUP_G + GROUP_H + GROUP_I + GROUP_J + GROUP_K + GROUP_L + GROUP_M + GROUP_N
 )
 
 _GROUP_MAP: dict[str, list[Paper]] = {
     "A": GROUP_A, "B": GROUP_B, "C": GROUP_C, "D": GROUP_D,
     "E": GROUP_E, "F": GROUP_F, "G": GROUP_G, "H": GROUP_H,
     "I": GROUP_I, "J": GROUP_J, "K": GROUP_K, "L": GROUP_L,
-    "M": GROUP_M,
+    "M": GROUP_M, "N": GROUP_N,
 }
 
 GROUP_LABELS: dict[str, str] = {
@@ -1386,6 +1602,7 @@ GROUP_LABELS: dict[str, str] = {
     "K": "Rate plumbing / SOFR",
     "L": "European macro: ECB policy, EA financial stability & sovereign-bank nexus",
     "M": "Systematic fixed income factors: Richardson / AQR research program",
+    "N": "Cross-asset factor pricing: Fama-MacBeth methodology & regime premia",
 }
 
 
