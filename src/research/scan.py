@@ -36,6 +36,7 @@ from .detectors import (
     detect_structural_break,
 )
 from .findings import Finding, append_stats, existing_slugs, make_slug, write_findings_md
+from .seeds import TopicSeed, make_seed_id, write_seed, existing_seed_ids
 
 log = logging.getLogger(__name__)
 
@@ -692,6 +693,76 @@ def scan_btp_bund_regime() -> tuple[list[DetectorHit], list[tuple[str, str]]]:
 
 
 # -------------------------------------------------------------------------
+# Hit → TopicSeed conversion
+# -------------------------------------------------------------------------
+
+_KIND_ANCHORS: dict[str, list[str]] = {
+    "notable_move_level":   ["extreme", "percentile", "tail"],
+    "notable_move_change":  ["move", "change", "shock"],
+    "structural_break":     ["structural break", "mean shift", "regime"],
+    "correlation_shift":    ["correlation", "regime", "relationship"],
+    "lead_lag_change":      ["lead", "lag", "predictive"],
+    "regime_transition":    ["regime", "transition", "quantile"],
+    "spread_extreme":       ["spread", "fragmentation", "stress"],
+    "breakeven_anomaly":    ["breakeven", "inflation expectations", "risk premium"],
+    "cp_factor_signal":     ["bond risk premium", "term premium", "yield curve"],
+    "btp_bund_regime":      ["btp-bund", "fragmentation", "sovereign", "ecb"],
+    "decomposition_shift":  ["decomposition", "component", "contribution"],
+}
+
+
+def _build_key_stats(series_ids: tuple[str, ...]) -> dict[str, dict]:
+    """Build key_stats dict for a seed from live parquet values."""
+    from src.analytics.stats import zscore_vs_history, percentile_rank
+    stats: dict[str, dict] = {}
+    for sid in series_ids:
+        try:
+            s = D.load_series(sid).dropna()
+            if s.empty:
+                continue
+            cur_val = float(s.iloc[-1])
+            cur_date = str(s.index[-1].date())
+            meta = D.series_metadata(sid)
+            freq = str(meta.get("frequency_short", "M"))
+            obs_per_year = {"D": 252, "W": 52, "BW": 26, "M": 12, "Q": 4, "SA": 2, "A": 1}.get(freq, 12)
+            lb10 = obs_per_year * 10
+            stats[sid] = {
+                "value": cur_val,
+                "date": cur_date,
+                "z_score": round(float(zscore_vs_history(s)), 3),
+                "percentile_10y": round(float(percentile_rank(s, cur_val, lookback=lb10)), 3),
+                "units": str(meta.get("units", "")),
+                "title": str(meta.get("title", sid)),
+            }
+        except Exception:
+            pass
+    return stats
+
+
+def _seed_from_hit(hit: DetectorHit, today: date) -> TopicSeed:
+    """Build a TopicSeed from a detector hit."""
+    from datetime import datetime
+    ttl = 7  # days
+    seed_id = make_seed_id(hit.kind, hit.series_ids, today)
+    key_stats = _build_key_stats(hit.series_ids)
+    anchors = _KIND_ANCHORS.get(hit.kind, [hit.kind])
+    created = datetime.now().isoformat(timespec="seconds")
+
+    return TopicSeed(
+        id=seed_id,
+        detector=hit.kind,
+        series_ids=hit.series_ids,
+        key_stats=key_stats,
+        concept_anchors=anchors,
+        sources=[],  # populated by harvest phase (Phase 2)
+        priority_score=hit.score,
+        created=created,
+        expires=(today + timedelta(days=ttl)).isoformat(),
+        used=False,
+    )
+
+
+# -------------------------------------------------------------------------
 # Hit → Finding conversion
 # -------------------------------------------------------------------------
 
@@ -1017,6 +1088,7 @@ def run_scan(
     today: date | None = None,
     overwrite_findings: bool = False,
     skip_relationships: bool = False,
+    dry_run: bool = False,
 ) -> ScanReport:
     """Run every detector, persist stats and findings. Returns a report."""
     # Default to RELATIONSHIPS-derived pairs (superset of old CORE_PAIRS).
@@ -1097,6 +1169,20 @@ def run_scan(
             if len(qdf):
                 append_stats(stat_name, qdf)
                 report.stats_rows_written[stat_name] = report.stats_rows_written.get(stat_name, 0) + len(qdf)
+
+    # Write seeds for each hit (idempotent — skips existing IDs).
+    _existing_seed_ids: set[str] = existing_seed_ids()
+    for h in report.hits:
+        seed_id = make_seed_id(h.kind, h.series_ids, today)
+        if seed_id not in _existing_seed_ids:
+            try:
+                seed = _seed_from_hit(h, today)
+                if not dry_run:
+                    write_seed(seed)
+                _existing_seed_ids.add(seed_id)
+                log.debug("seed written: %s", seed_id)
+            except Exception as e:
+                log.warning("seed write failed for %s: %s", seed_id, e)
 
     # Turn hits into findings and write markdown.
     prior = existing_slugs()

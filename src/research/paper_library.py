@@ -14,6 +14,8 @@ Groups:
   I - Commodity markets
   J - Macro × equity interactions
   K - Rate plumbing / SOFR
+  L - European macro: ECB policy, EA financial stability & sovereign-bank nexus
+  M - Systematic fixed income factors: Richardson / AQR research program
 """
 
 from __future__ import annotations
@@ -1113,17 +1115,261 @@ GROUP_K: list[Paper] = [
 ]
 
 # ---------------------------------------------------------------------------
+# Group L: European macro — ECB policy, EA financial stability & sovereign-bank nexus
+# ---------------------------------------------------------------------------
+GROUP_L: list[Paper] = [
+    Paper(
+        title="Asset Purchase Programmes and Financial Markets: Lessons from the Euro Area (Altavilla, Carboni & Motto, ECB WP 1864)",
+        group="L",
+        methodology="High-frequency event study around ECB APP announcement dates; panel regression of yield changes on purchase amounts; decomposes impact by tenor and country",
+        difficulty=3,
+        fred_implementability=4,
+        macro_relevance=5,
+        key_series=["ECB.DFR", "ECB.YC.AAA.10Y", "ECB.BTPBUND.SPREAD", "ECB.DE.10Y", "ECB.IT.10Y"],
+        notes="Reference paper for ECB QE transmission. BTP-Bund compression was the dominant channel for each APP announcement, not Bund yields per se. Replicable event-study on ECB.* daily series around GC meeting dates.",
+        newsletter_date=None,
+    ),
+    Paper(
+        title="Self-Fulfilling Crises in the Eurozone: An Empirical Test (De Grauwe & Ji, JIMF 2013)",
+        group="L",
+        methodology="Panel OLS decomposing sovereign spreads into fundamentals (deficit, debt/GDP, current account) vs. residual panic component; shows residual dominates in 2010-12 crisis window",
+        difficulty=2,
+        fred_implementability=4,
+        macro_relevance=5,
+        key_series=["ECB.BTPBUND.SPREAD", "ECB.IT.10Y", "ECB.DE.10Y"],
+        notes="Foundational paper establishing that EA spreads have a self-fulfilling panic component separable from fiscal fundamentals. OMT/TPI effectiveness depends entirely on this mechanism — if spreads were driven by fundamentals alone, backstop tools wouldn't work. Spread decomposition replicable on ECB.* series.",
+        newsletter_date=None,
+    ),
+    Paper(
+        title="The Sovereign-Bank Diabolic Loop and ESBies (Brunnermeier et al., AER P&P 2016)",
+        group="L",
+        methodology="Stylized model of doom loop equilibria; Monte Carlo simulation of European Safe Bond tranching to break the loop; calibrated to EA sovereign-bank data",
+        difficulty=3,
+        fred_implementability=3,
+        macro_relevance=5,
+        key_series=["ECB.BTPBUND.SPREAD", "ECB.IT.10Y", "ECB.DE.10Y"],
+        notes="Canonical formal treatment of the doom loop. Key empirical implication: European bank equity in stressed-sovereign countries amplifies BTP-Bund moves, and the elasticity rises non-linearly as spreads cross ~200bp. ESBies proposed as structural fix. Feeds directly into doom loop concept in knowledge/concepts.md.",
+        newsletter_date=None,
+    ),
+    Paper(
+        title="A Pyrrhic Victory? Bank Bailouts and Sovereign Credit Risk (Acharya, Drechsler & Schnabl, JF 2014)",
+        group="L",
+        methodology="Difference-in-differences around EA bank bailout announcements 2008-09; CDS spreads of sovereign widen while bailed-out bank CDS tightens; IV using pre-crisis bank fragility",
+        difficulty=3,
+        fred_implementability=3,
+        macro_relevance=5,
+        key_series=["ECB.BTPBUND.SPREAD", "ECB.IT.10Y"],
+        notes="Cleanest empirical evidence that bank bailouts transfer risk to sovereign balance sheet — the mechanism underlying the doom loop. CDS microdata external; BTP-Bund spread as macro proxy captures the aggregate signal. Strong reference for any email covering EA financial stability.",
+        newsletter_date=None,
+    ),
+    Paper(
+        title="Evaluating the Impact of Unconventional Monetary Policy Measures: The ECB's Securities Markets Programme (Eser & Schwaab, JFE 2016)",
+        group="L",
+        methodology="Panel regression of daily yield changes on SMP purchase volumes (2010-12); IV strategy using ECB operational constraints; counterfactual spread estimates",
+        difficulty=4,
+        fred_implementability=3,
+        macro_relevance=4,
+        key_series=["ECB.BTPBUND.SPREAD", "ECB.IT.10Y", "ECB.DE.10Y"],
+        notes="Most credible causal estimate of ECB bond-buying impact. SMP (pre-OMT) compressed IT-DE spread by ~2bp per €1bn purchased; announcement effect >> stock effect. Directly informs interpretation of OMT and TPI: credibility of backstop matters more than volume. Replication requires SMP purchase data (ECB statistical warehouse).",
+        newsletter_date=None,
+    ),
+    Paper(
+        title="Bank Exposures and Sovereign Stress Transmission (Altavilla, Pagano & Simonelli, Review of Finance 2017)",
+        group="L",
+        methodology="Supervisory bank balance-sheet data matched to stock returns; cross-sectional regression of bank equity returns on domestic sovereign holding × spread change; placebo tests using foreign sovereign holdings",
+        difficulty=3,
+        fred_implementability=3,
+        macro_relevance=5,
+        key_series=["ECB.BTPBUND.SPREAD", "ECB.IT.10Y"],
+        notes="Definitive paper on home-bias doom loop mechanism. Italian banks holding BTP lose ~2-3% equity value for each 100bp widening in BTP-Bund. European bank equity is therefore a real-time doom loop monitor. The home-bias channel is distinct from the NIM channel; both run through ECB.BTPBUND.SPREAD.",
+        newsletter_date=None,
+    ),
+    Paper(
+        title="Measuring Euro Area Monetary Policy (Altavilla, Brugnolini, Gürkaynak, Motto & Ragusa, JME 2022 / ECB WP 2250)",
+        group="L",
+        methodology="High-frequency identification of ECB policy shocks from intraday OIS moves around GC meetings; principal components decompose into target-rate surprise, forward-guidance shock, and QE shock (three orthogonal factors)",
+        difficulty=4,
+        fred_implementability=4,
+        macro_relevance=5,
+        key_series=["ECB.DFR", "ECB.ESTR", "ECB.YC.AAA.2Y", "ECB.YC.AAA.10Y"],
+        notes="ECB analogue of Gürkaynak-Sack-Swanson (2005). Three-factor decomposition: (1) target rate surprise, (2) forward guidance, (3) QE. Daily ECB.* series allow coarser replication of forward-guidance and QE shocks. EA-MPD dataset publicly available from ECB website. Essential for any ECB event study.",
+        newsletter_date=None,
+    ),
+    Paper(
+        title="ECB Unconventional Monetary Policy: Market Impact and International Spillovers (Fratzscher, Lo Duca & Straub, IMF Economic Review 2016)",
+        group="L",
+        methodology="Event study of ECB non-standard measures 2008-12; GVAR model for international transmission; tests EUR/USD, EM capital flows, and US rate spillbacks",
+        difficulty=3,
+        fred_implementability=4,
+        macro_relevance=5,
+        key_series=["ECB.DFR", "ECB.BTPBUND.SPREAD", "DTWEXBGS"],
+        notes="ECB QE → EUR depreciation → US financial conditions tightening via exchange rate channel; but also positive EA demand spillover. EUR/USD and DTWEXBGS are FRED-available outputs. Key for framing ECB/Fed divergence emails: ECB easing is not a zero-sum game for US assets.",
+        newsletter_date=None,
+    ),
+    Paper(
+        title="The Interdependence of Wages and Prices in the Euro Area (Bobeica, Ciccarelli & Vansteenkiste, ECB WP 2292, 2019)",
+        group="L",
+        methodology="Structural VAR with sign restrictions; decomposes EA wage-price dynamics into demand, supply, and autonomous wage shocks; impulse responses at 1-8 quarter horizons",
+        difficulty=4,
+        fred_implementability=4,
+        macro_relevance=5,
+        key_series=["ECB.WAGES.NEG", "ECB.HICP.EA.CORE", "ECB.HICP.EA.TOTAL"],
+        notes="Key paper for EA wage-price spiral risk. Lead time from negotiated wage growth to core HICP is 2-3 quarters; pass-through is asymmetric — stronger in demand-driven upswings than in supply-shock episodes. Directly implementable as lead-lag detector on ECB.WAGES.NEG → ECB.HICP.EA.CORE. ECB WP freely available.",
+        newsletter_date=None,
+    ),
+    Paper(
+        title="Monetary Policy and Bank Profitability in a Low Interest Rate Environment (Altavilla, Boucinha & Peydró, Economic Policy 2018)",
+        group="L",
+        methodology="Panel of European listed banks 1999-2016; OLS and IV regressions of NIM, fee income, and total profitability on short-term rates; tests tiering threshold non-linearity",
+        difficulty=3,
+        fred_implementability=3,
+        macro_relevance=4,
+        key_series=["ECB.DFR", "ECB.ESTR"],
+        notes="NIRP compresses NIM but higher credit volume and fee income partially offset; net effect on bank profitability is negative but smaller than feared. Tiering (2019 ECB decision) partially neutralizes NIRP drag. European bank equity sensitivity to ECB rate cycle is asymmetric: cuts hurt less than hikes help. Useful for framing bank equity × ECB policy emails.",
+        newsletter_date=None,
+    ),
+    Paper(
+        title="The Mystery of the Printing Press: Monetary Policy and Self-Fulfilling Debt Crises (Corsetti & Dedola, JEEA 2016)",
+        group="L",
+        methodology="Two-country DSGE model; derives conditions under which central bank asset purchases can eliminate self-fulfilling equilibria without fiscal dominance; analytical characterization of credibility threshold",
+        difficulty=4,
+        fred_implementability=2,
+        macro_relevance=4,
+        key_series=["ECB.BTPBUND.SPREAD", "ECB.DFR"],
+        notes="Theoretical foundation for why OMT/TPI credibility — not volume — is the operative mechanism. Key insight: a sufficiently committed CB can eliminate the bad equilibrium without ever purchasing a single bond, provided markets believe the commitment. Empirical test: BTP-Bund snap-back after Draghi's 'whatever it takes' (2012-07-26) required no actual SMP purchases.",
+        newsletter_date=None,
+    ),
+    Paper(
+        title="Why Bank Capital Matters for Monetary Policy (Gambacorta & Shin, JFI 2018)",
+        group="L",
+        methodology="Panel VAR on international bank balance sheets; tests whether bank equity capital ratio amplifies or attenuates monetary transmission to lending; structural identification via bank-level heterogeneity",
+        difficulty=3,
+        fred_implementability=3,
+        macro_relevance=4,
+        key_series=["ECB.DFR", "ECB.M3.EA"],
+        notes="Better-capitalized banks transmit ECB rate cuts more fully through the lending channel; undercapitalized banks hoard liquidity. Relevant for EA bank equity analysis: bank equity ratio → M3 credit multiplier → HICP. Directly applicable to post-2022 context where ECB hikes interact with varying EA bank capital buffers.",
+        newsletter_date=None,
+    ),
+    Paper(
+        title="The European Sovereign Debt Crisis (Lane, JEP 2012)",
+        group="L",
+        methodology="Empirical synthesis; documents current account imbalance accumulation 1999-2008, sovereign spread dynamics 2008-12, and bank-sovereign linkages across periphery; regression of spread levels on fiscal and external fundamentals",
+        difficulty=2,
+        fred_implementability=3,
+        macro_relevance=5,
+        key_series=["ECB.BTPBUND.SPREAD", "ECB.IT.10Y", "ECB.DE.10Y"],
+        notes="Best single readable reference for the 2010-12 EA crisis. Documents the full causal chain: EMU → current account imbalances → sovereign fragility → bank stress → doom loop. Essential framing for any email covering BTP-Bund, TARGET2, or fragmentation risk. JEP articles are freely available and citable as primary source.",
+        newsletter_date=None,
+    ),
+]
+
+# ---------------------------------------------------------------------------
+# Group M: Systematic fixed income factors — Richardson / AQR research program
+# ---------------------------------------------------------------------------
+GROUP_M: list[Paper] = [
+    Paper(
+        title="The Credit Risk Premium (Asvanunt & Richardson, JFI Winter 2017)",
+        group="M",
+        methodology="Long-run regression of corporate bond excess returns over Treasuries 1936-2014; decomposes total credit spread into expected default loss and risk premium component; compares to equity risk premium over same history",
+        difficulty=2,
+        fred_implementability=4,
+        macro_relevance=5,
+        key_series=["BAMLC0A0CM", "BAMLH0A0HYM2", "BAMLHYH0A0HYM2EY", "BAMLCC0A0CMEY", "DGS10"],
+        notes="137bp average credit risk premium over full history; additive to equity and term premia. The credit-market ERP equivalent — the empirical anchor for understanding whether credit spread compensation is 'real.' ICE BofA FRED indices cover 1996+; pre-1996 requires Ibbotson/Lehman data. Key finding directly quotable in emails as a specific, non-obvious empirical claim.",
+        newsletter_date=None,
+    ),
+    Paper(
+        title="Common Factors in Corporate Bond Returns (Israel, Palhares & Richardson, JOIM 2018)",
+        group="M",
+        methodology="Fama-MacBeth cross-sectional regressions of monthly corporate bond excess returns on four characteristics: carry (OAS level), defensive (low duration-times-spread beta), momentum (trailing 6-month return), value (OAS vs. model-implied fair-value spread); robust to transaction costs and subsamples",
+        difficulty=3,
+        fred_implementability=4,
+        macro_relevance=5,
+        key_series=["BAMLC0A0CM", "BAMLH0A0HYM2", "BAMLHYH0A0HYM2EY", "BAMLCC0A0CMEY", "T10Y2Y"],
+        notes="Four-factor model for corporate bond cross-section. Not subsumed by equity factor equivalents or traditional credit/term premia. Key macro-actionable finding: OAS level (carry) is the strongest single predictor — high-spread bonds persistently outperform after default adjustment. ICE BofA rating-tier indices on FRED allow rough carry-factor replication (IG vs. HY OAS spread as carry proxy). Core reference for any email on credit factor premia.",
+        newsletter_date=None,
+    ),
+    Paper(
+        title="Style Investing in Fixed Income (Brooks, Palhares & Richardson, JPM 2018)",
+        group="M",
+        methodology="Applies four-factor framework (value, momentum, carry, defensive) to both government bonds and corporate bonds; tests diversification benefit of multi-asset cross-fixed-income factor portfolio; low correlation to term and credit risk premia confirmed",
+        difficulty=2,
+        fred_implementability=5,
+        macro_relevance=5,
+        key_series=["DGS1", "DGS2", "DGS5", "DGS10", "DGS30", "T10Y2Y", "T10Y3M", "BAMLC0A0CM", "BAMLH0A0HYM2"],
+        notes="Best single entry point into Richardson's program — covers govies and credit together. Style factors are uncorrelated to term and credit risk premia; genuinely alpha-generating rather than risk-premium harvesting. For government bonds: carry = yield level, defensive = shorter duration / lower vol, momentum = trailing yield-adjusted return. All four government bond factors directly computable from FRED Treasury curve. Highest FRED implementability of all Richardson papers.",
+        newsletter_date=None,
+    ),
+    Paper(
+        title="(Il)liquidity Premium in Credit Markets: A Myth? (Palhares & Richardson, JFI Winter 2019)",
+        group="M",
+        methodology="Sort IG corporate bonds by liquidity proxies (amount outstanding, bond age, coupon frequency); compute gross and net-of-estimated-transaction-cost excess returns; test whether liquidity premium survives duration and credit risk adjustment",
+        difficulty=3,
+        fred_implementability=3,
+        macro_relevance=4,
+        key_series=["BAMLC0A0CM", "BAMLH0A0HYM2", "BAMLCC0A0CMEY"],
+        notes="Counterintuitive finding: illiquid bonds have modestly higher spreads but materially higher realized volatility; after risk adjustment the liquidity premium largely disappears. Practical implication: 'liquidity premium' in credit is mostly compensation for hidden risk, not a free lunch. FRED ICE BofA indices represent the liquid segment; full replication requires TRACE. Non-obvious result worth a dedicated email.",
+        newsletter_date=None,
+    ),
+    Paper(
+        title="Looking under the Hood of Active Credit Managers (Palhares & Richardson, FAJ 2020)",
+        group="M",
+        methodology="Regression of 219 credit hedge fund and 96 credit mutual fund returns on four systematic factors (carry, defensive, momentum, value); R² decomposition; compares alpha between fund types",
+        difficulty=2,
+        fred_implementability=3,
+        macro_relevance=4,
+        key_series=["BAMLC0A0CM", "BAMLH0A0HYM2", "BAMLHYH0A0HYM2EY"],
+        notes="Credit hedge funds: 7-12% of return variation explained by systematic factors. Credit mutual funds: only 2%. Most 'active' credit alpha is unattributed credit beta or hidden systematic tilts. Equities analogy: the credit-market version of showing that most active equity managers are closet indexers. FRED credit indices serve as factor proxies for the four characteristics. Relevant for understanding what active credit managers actually do vs. claim.",
+        newsletter_date=None,
+    ),
+    Paper(
+        title="(Systematic) Investing in Emerging Market Debt (Brooks, Richardson & Xu, Working Paper 2020)",
+        group="M",
+        methodology="Applies four-factor framework (carry, defensive, momentum, value) to hard-currency EM sovereign and quasi-sovereign bonds; transaction-cost and liquidity adjusted long-only implementation; information ratio evaluation",
+        difficulty=3,
+        fred_implementability=3,
+        macro_relevance=4,
+        key_series=["BAMLH0A0HYM2", "DTWEXEMEGS", "DTWEXBGS"],
+        notes="Same four factors work in EM debt; carry is strongest. Long-only factor portfolio achieved IR > 1. FRED has limited EM bond data; full replication requires EMBIG or Bloomberg EM indices. Cross-asset macro relevance: EM debt carry is tightly correlated with DXY strength and US HY risk appetite (BAMLH0A0HYM2 as proxy) — a relationship directly testable on FRED series.",
+        newsletter_date=None,
+    ),
+    Paper(
+        title="Value Investing in Credit Markets (Correia, Richardson & Tuna, RAS 2012)",
+        group="M",
+        methodology="Cross-sectional regression of CDS and corporate bond returns on fundamental accounting signals: book leverage, earnings quality (accruals), Altman Z-score, distance-to-default; tests whether accounting-based value predicts returns independently of market-based signals",
+        difficulty=3,
+        fred_implementability=2,
+        macro_relevance=3,
+        key_series=["BAMLC0A0CM", "BAMLH0A0HYM2"],
+        notes="Foundational paper predating the AQR factor program. Accounting signals (Z-score, earnings quality) predict bond returns; fair-value spread deviation used in later papers as the 'value' factor is rooted here. Low FRED implementability — requires Compustat firm-level accounting data. Important conceptual anchor: 'value' in credit is not just mean-reversion of spread level but deviation from fundamentals-implied fair value.",
+        newsletter_date=None,
+    ),
+    Paper(
+        title="Computing Corporate Bond Returns: A Word (or Two) of Caution (Andreani, Palhares & Richardson, RAS 2023)",
+        group="M",
+        methodology="Documents return computation bias from failing to separate rate and spread components; rate component is negatively correlated to spread component; provides WRDS-based correction; shows contamination is worst for IG bonds and time-series regressions",
+        difficulty=2,
+        fred_implementability=3,
+        macro_relevance=3,
+        key_series=["BAMLC0A0CM", "BAMLCC0A0CMEY", "DGS10", "DGS2"],
+        notes="Methodological paper critical for any credit return research. Rate and spread components of total bond return are negatively correlated — total return conflates duration risk with credit risk. In rising-rate environments this systematically overstates credit spread return. Practical fix for FRED users: use OAS change (not total return) as the credit-specific signal. FRED provides OAS separately from yield-to-maturity for ICE BofA series.",
+        newsletter_date=None,
+    ),
+]
+
+# ---------------------------------------------------------------------------
 # Full catalog
 # ---------------------------------------------------------------------------
 ALL_PAPERS: list[Paper] = (
     GROUP_A + GROUP_B + GROUP_C + GROUP_D + GROUP_E +
-    GROUP_F + GROUP_G + GROUP_H + GROUP_I + GROUP_J + GROUP_K
+    GROUP_F + GROUP_G + GROUP_H + GROUP_I + GROUP_J + GROUP_K + GROUP_L + GROUP_M
 )
 
 _GROUP_MAP: dict[str, list[Paper]] = {
     "A": GROUP_A, "B": GROUP_B, "C": GROUP_C, "D": GROUP_D,
     "E": GROUP_E, "F": GROUP_F, "G": GROUP_G, "H": GROUP_H,
-    "I": GROUP_I, "J": GROUP_J, "K": GROUP_K,
+    "I": GROUP_I, "J": GROUP_J, "K": GROUP_K, "L": GROUP_L,
+    "M": GROUP_M,
 }
 
 GROUP_LABELS: dict[str, str] = {
@@ -1138,6 +1384,8 @@ GROUP_LABELS: dict[str, str] = {
     "I": "Commodity markets",
     "J": "Macro × equity interactions",
     "K": "Rate plumbing / SOFR",
+    "L": "European macro: ECB policy, EA financial stability & sovereign-bank nexus",
+    "M": "Systematic fixed income factors: Richardson / AQR research program",
 }
 
 

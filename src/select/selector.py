@@ -17,6 +17,7 @@ import pandas as pd
 from src.ingest.paths import RELEASE_CALENDAR_PATH, RELEASE_SERIES_PATH, STATE_DIR
 from src.ingest.storage import load_parquet
 from src.research.findings import Finding, read_findings_md
+from src.research.seeds import TopicSeed, read_seeds, mark_seed_used, expire_old_seeds
 
 logger = logging.getLogger(__name__)
 
@@ -69,6 +70,14 @@ _HOOKABLE_RELEASE_KEYWORDS: tuple[str, ...] = (
     "eurostat hicp",
     "flash hicp",
 )
+
+
+@dataclass
+class SeedPick:
+    kind: str                    # always "seed"
+    seed: TopicSeed
+    release_context: dict | None
+    reason: str
 
 
 @dataclass
@@ -146,6 +155,58 @@ def record_lesson_sent(finding: Finding, today: date | None = None) -> None:
         "title": finding.title,
         "kind": finding.kind,
         "series_ids": list(finding.series_ids),
+    }
+    with LESSON_HISTORY_PATH.open("a") as fh:
+        fh.write(json.dumps(entry) + "\n")
+
+
+def pick_seed(today: date | None = None, lookback_days: int = 14) -> TopicSeed | None:
+    """Select the best unused seed for today's email.
+
+    Returns None if nothing eligible — caller falls back to pick_lesson().
+    """
+    today = today or date.today()
+    expire_old_seeds()
+
+    seeds = read_seeds()
+    if not seeds:
+        return None
+
+    today_str = today.isoformat()
+    _, recent_series = _load_recent_history(lookback_days)
+
+    eligible = [
+        s for s in seeds
+        if not s.used
+        and s.expires >= today_str
+        and not any(sid in recent_series for sid in s.series_ids)
+    ]
+    if not eligible:
+        return None
+
+    # Prefer seeds whose series overlap an upcoming release in the next 2 days.
+    upcoming = _upcoming_releases(today, days_ahead=2)
+    if upcoming:
+        release_series = _release_series_for(upcoming)
+        release_picks = [s for s in eligible if any(sid in release_series for sid in s.series_ids)]
+        if release_picks:
+            return max(release_picks, key=lambda s: s.priority_score)
+
+    return max(eligible, key=lambda s: s.priority_score)
+
+
+def record_seed_sent(seed: TopicSeed, today: date | None = None) -> None:
+    """Mark seed used and append to lesson_history.jsonl."""
+    today = today or date.today()
+    mark_seed_used(seed.id)
+    STATE_DIR.mkdir(parents=True, exist_ok=True)
+    entry = {
+        "date": today.isoformat(),
+        "slug": seed.id,
+        "title": seed.detector,
+        "kind": seed.detector,
+        "series_ids": list(seed.series_ids),
+        "source": "seed",
     }
     with LESSON_HISTORY_PATH.open("a") as fh:
         fh.write(json.dumps(entry) + "\n")
