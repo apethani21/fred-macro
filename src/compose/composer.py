@@ -537,7 +537,7 @@ TARGET: 500–700 words total (excluding the Terms & Mechanics section). One ema
 
 STRUCTURE — divide the email using the <h3> section headers listed below. Use EXACTLY these header strings and no others. Do not create custom headers or use the finding title as a header.
 1. (no header) Hook (2–3 sentences): set the scene — introduce the topic and why it is worth understanding today. If anchored to an upcoming release, name it and briefly say what it will test. Do NOT open with the empirical punchline; the hook is the door, not the room. No generic opener.
-2. <h3>The Concept</h3> (2–4 short paragraphs): explain what the metric is, how it is constructed, what drives it, and why the reader should care — woven together naturally, not as a list. Start with the intuitive plain-English version ("think of it as X"), add the technical detail, name any direct equities analogue, and in the same flow explain what information it carries that equity prices alone do not. By the end of this section the reader understands both what this thing is and why it matters.
+2. <h3>The Concept</h3> (2–4 short paragraphs): explain what the metric is, how it is constructed, what drives it, and why the reader should care — woven together naturally, not as a list. Start with the intuitive plain-English version ("think of it as X"), add the technical detail, name any direct equities analogue, and in the same flow explain what information it carries that equity prices alone do not. By the end of this section the reader understands both what this thing is and why it matters. Define every fixed-income or macro-specific term the moment it first appears — briefly, inline, in parentheses or a subordinate clause; do not save definitions for Terms & Mechanics. When the equities analogue is the clearest entry point to the concept, lead with it before the formal definition. Do not shy away from technical precision: if the concept has a clean mathematical definition (e.g., modified duration ≈ −ΔP/P ÷ Δy), state it — a quant reader learns more from the formula than from a roundabout description.
 3. <h3>The Analysis</h3> (1–2 paragraphs): the specific empirical work — what the data actually shows, with numbers, windows, and citation. This is the research behind today's email. Place {{CHART_1}} immediately after this section.
 4. <h3>Where We Are Now</h3> (1 paragraph): current reading vs history. Where in the distribution? How does today compare to prior episodes? Place {{CHART_2}} immediately after. Place {{CHART_3}} immediately after {{CHART_2}} if a third chart exists.
 5. <h3>What to Watch</h3> (1–2 sentences): the specific release, data point, or signal that would update the picture. Dated and specific — no generic closers.
@@ -591,10 +591,14 @@ PROSE RULES:
 - Never combine a %ile citation with a regime label for the same reading — the number conveys the context.
 - Break any sentence over 25 words.
 - Bullets are allowed anywhere they aid clarity. Required for any Q&A mechanics callouts.
+- Technical depth: do not round off corners. If a mechanism has three steps, explain all three. Do not substitute vague summary language ("it tightens conditions") for the actual chain of causation.
+- Causal chains: when explaining how A leads to B leads to C, write the chain explicitly — name the mechanism at each link. Do not jump from premise to conclusion.
 
 FACTUAL ACCURACY RULES:
-- Use ONLY the numbers from the DATA CONTEXT provided. Do not invent or estimate numbers.
-- Every value in the email traces to a FRED series in the data context.
+- Use ONLY the numbers from DATA CONTEXT or CONTEXTUAL BACKGROUND DATA provided. Do not invent or estimate numbers.
+- Every FRED-derived value in the email traces to a series in one of those two sections.
+- EXCEPTION for harvested_source findings: numbers that appear verbatim in the FINDING RECORD evidence block are from the cited academic or institutional source and may be quoted directly in the email, attributed to that source. Do not invent numbers not present in the evidence block.
+- When CONTEXTUAL BACKGROUND DATA is present, use it to ground the "Where We Are Now" section — state where the relevant series sits today and in its historical distribution. Label these readings as background context, not as the finding's direct claim.
 - Mechanistic and interpretive claims must be grounded in the finding's Sources list or CONCEPT CONTEXT. If a mechanism is not explicitly supported there, either omit it or soften it to "the mechanism is not established here." Do not assert causal mechanisms as fact on the basis of general knowledge alone.
 - When data is ambiguous, surface the uncertainty — do not hide it.
 
@@ -624,7 +628,7 @@ Check for:
 8. Unsupported historical claims: a claim about a specific historical event with no source in the finding's Sources list or CONCEPT CONTEXT
 9. σ citations with more than 1 decimal place (e.g., "−0.20σ" should be "−0.2σ")
 10. Key statistics (values, z-scores, %ile ranks, correlations, bp changes) not wrapped in <strong> tags
-11. Terms & Mechanics entries that explain financial basics the reader already knows (basis points, yield, spread, standard deviation, price-return) — flag as too obvious
+11. Terms & Mechanics entries that explain true financial basics the reader knows from equities work (what a yield is, what a spread is, what basis points are, what standard deviation is, basic price-return math) — flag as too obvious. Do NOT flag entries for FI/macro-specific mechanics the reader may not know cold from equities: duration, convexity, repo mechanics, haircuts, SOFR construction, seasonal adjustment, CPI basket methodology, BLS birth-death model, chained-dollar deflation, Fed operational details (IORB, ON RRP, SRF) — these are appropriate and useful for this reader
 12. Terms & Mechanics items using "Q: ..." format instead of bullet list format
 
 OUTPUT:
@@ -739,10 +743,10 @@ def _float_or_none(x) -> float | None:
         return None
 
 
-def build_data_context(finding: Finding) -> dict[str, SeriesSnapshot]:
-    """Load current value plus full-history and windowed z-scores / percentile ranks."""
+def _build_series_snapshots(series_ids: list[str]) -> dict[str, SeriesSnapshot]:
+    """Build SeriesSnapshot objects for an explicit list of series IDs."""
     ctx: dict[str, SeriesSnapshot] = {}
-    for sid in finding.series_ids:
+    for sid in series_ids:
         try:
             s = load_series(sid)
             meta = series_metadata(sid)
@@ -773,6 +777,50 @@ def build_data_context(finding: Finding) -> dict[str, SeriesSnapshot]:
         except (KeyError, IndexError, FileNotFoundError) as e:
             logger.warning("Could not build data context for %s: %s", sid, e)
     return ctx
+
+
+def build_data_context(finding: Finding) -> dict[str, SeriesSnapshot]:
+    """Load current value plus full-history and windowed z-scores / percentile ranks."""
+    return _build_series_snapshots(list(finding.series_ids))
+
+
+# Keyword → FRED series mapping for harvested findings with no tagged series.
+_TOPIC_SERIES: dict[str, list[str]] = {
+    "wage": ["AHETPI"], "wages": ["AHETPI"], "earning": ["AHETPI"], "earnings": ["AHETPI"],
+    "labor": ["UNRATE", "AHETPI"], "employment": ["UNRATE", "PAYEMS"],
+    "unemployment": ["UNRATE"], "payroll": ["PAYEMS"], "payrolls": ["PAYEMS"],
+    "inflation": ["CPIAUCSL", "T10YIE"], "cpi": ["CPIAUCSL"], "pce": ["PCEPI"],
+    "tariff": ["CPIAUCSL", "PCEPI"], "price": ["CPIAUCSL"],
+    "expectation": ["MICH"], "expectations": ["MICH"],
+    "yield": ["DGS10", "T10Y2Y"], "treasury": ["DGS10"], "rate": ["DFF", "DGS10"],
+    "credit": ["BAA10Y"], "spread": ["BAA10Y", "T10Y2Y"],
+    "vix": ["VIXCLS"], "volatility": ["VIXCLS"],
+    "dollar": ["DTWEXBGS"], "fx": ["DTWEXBGS"],
+    "oil": ["DCOILWTICO"], "crude": ["DCOILWTICO"], "energy": ["DCOILWTICO"],
+    "gdp": ["GDPC1"], "growth": ["GDPC1", "INDPRO"],
+    "housing": ["HOUST", "MORTGAGE30US"], "mortgage": ["MORTGAGE30US"],
+    "breakeven": ["T10YIE", "DFII10"], "tips": ["DFII10"],
+    "fomc": ["DFF", "DGS2"], "monetary": ["DFF"],
+    "recession": ["T10Y2Y", "UNRATE"], "cycle": ["T10Y2Y", "UNRATE"],
+    "repo": ["SOFR"], "sofr": ["SOFR"],
+}
+
+
+def _infer_context_series(finding: Finding, max_series: int = 3) -> list[str]:
+    """For harvested findings with no tagged FRED series, infer relevant series from title/claim."""
+    import re as _re
+    text = f"{finding.title} {finding.claim}".lower()
+    words = _re.findall(r"\b\w+\b", text)
+    seen: set[str] = set()
+    result: list[str] = []
+    for word in words:
+        for sid in _TOPIC_SERIES.get(word, []):
+            if sid not in seen:
+                seen.add(sid)
+                result.append(sid)
+            if len(result) >= max_series:
+                return result
+    return result
 
 
 def _ctx_to_dict(ctx: dict[str, SeriesSnapshot]) -> dict:
@@ -848,7 +896,11 @@ def _load_concept_context(series_ids: list[str], keywords: list[str] | None = No
     return "\n\n".join(c.text for c in chunks)
 
 
-def draft_email(pick: LessonPick, ctx: dict[str, SeriesSnapshot]) -> dict:
+def draft_email(
+    pick: LessonPick,
+    ctx: dict[str, SeriesSnapshot],
+    inferred_ctx: "dict[str, SeriesSnapshot] | None" = None,
+) -> dict:
     """Call Claude to produce subject + HTML/text body.
 
     Returns dict with keys: subject, body_html, body_text.
@@ -875,6 +927,12 @@ def draft_email(pick: LessonPick, ctx: dict[str, SeriesSnapshot]) -> dict:
     concept_ctx = _load_concept_context(list(finding.series_ids), keywords=_kw_tokens[:10])
     if concept_ctx:
         user_content += f"CONCEPT CONTEXT (background on the relevant series — use for historical regime context and institutional detail):\n{concept_ctx}\n\n"
+    if inferred_ctx:
+        user_content += (
+            f"CONTEXTUAL BACKGROUND DATA (FRED series inferred from finding topic — not direct evidence from the finding, "
+            f"but use their current readings to anchor 'Where We Are Now'. Cite values from here as background context, "
+            f"not as the finding's core claim):\n{json.dumps(_ctx_to_dict(inferred_ctx), indent=2)}\n\n"
+        )
     user_content += "Write the daily macro education email. Return only the JSON object."
 
     response = client.messages.create(
@@ -887,14 +945,20 @@ def draft_email(pick: LessonPick, ctx: dict[str, SeriesSnapshot]) -> dict:
     return _extract_json(raw)
 
 
-def fact_check_draft(draft: dict, pick: LessonPick, ctx: dict[str, SeriesSnapshot]) -> dict:
+def fact_check_draft(
+    draft: dict,
+    pick: LessonPick,
+    ctx: dict[str, SeriesSnapshot],
+    inferred_ctx: "dict[str, SeriesSnapshot] | None" = None,
+) -> dict:
     """Return {"flags": [...], "approved": bool}."""
     client = _client()
 
+    merged_ctx = {**ctx, **(inferred_ctx or {})}
     user_content = (
         f"DRAFT (body text):\n{draft.get('body_text', '')}\n\n"
         f"FINDING RECORD:\n{json.dumps(_finding_to_dict(pick.finding), indent=2)}\n\n"
-        f"DATA CONTEXT:\n{json.dumps(_ctx_to_dict(ctx), indent=2)}\n\n"
+        f"DATA CONTEXT:\n{json.dumps(_ctx_to_dict(merged_ctx), indent=2)}\n\n"
         "Review the draft and return the JSON result."
     )
 
@@ -1385,10 +1449,59 @@ def _chart2_fomc_era_comparison(
         return None
 
 
-def generate_charts(pick: LessonPick, ctx: dict[str, SeriesSnapshot], today: date) -> list[Path]:
+def _chart1_context_series(
+    series_ids: list[str], chart_dir: Path, slug_short: str, today: date
+) -> "Path | None":
+    """Single contextual time-series chart for harvested findings with no tagged series."""
+    import matplotlib.pyplot as plt
+    from src.analytics.charts import time_series, time_series_zoom, save_to, add_source_footer, _span_years, _ZOOM_MIN_SPAN_YEARS
+    if not series_ids:
+        return None
+    sid = series_ids[0]
+    try:
+        s = load_series(sid)
+        meta = series_metadata(sid)
+        span = _span_years(s.dropna().index) if len(s.dropna()) > 1 else 0
+        if span >= _ZOOM_MIN_SPAN_YEARS:
+            fig, _ = time_series_zoom(
+                s, title=meta.get("title", sid), ylabel=str(meta.get("units", "")),
+                shade_nber=True, zoom_years=5,
+            )
+        else:
+            fig, _ = time_series(
+                s, title=meta.get("title", sid), ylabel=str(meta.get("units", "")),
+                shade_nber=True, annotate_last=True,
+            )
+        add_source_footer(fig, [sid], today)
+        out = chart_dir / f"{today.isoformat()}_{slug_short}_chart1_ctx.png"
+        save_to(fig, out)
+        plt.close(fig)
+        logger.info("Chart 1 (context) saved: %s", out)
+        return out
+    except Exception as e:
+        logger.warning("Chart 1 (context) failed for %s: %s", sid, e)
+        return None
+
+
+def generate_charts(
+    pick: LessonPick,
+    ctx: dict[str, SeriesSnapshot],
+    today: date,
+    inferred_ctx: "dict[str, SeriesSnapshot] | None" = None,
+) -> list[Path]:
     """Generate up to 3 charts for the finding. Returns list of saved PNG paths."""
     finding = pick.finding
-    if finding.kind not in _CHART_KINDS or not finding.series_ids:
+    if finding.kind not in _CHART_KINDS:
+        return []
+
+    # Harvested findings with no tagged series: fall back to a single contextual chart.
+    if not finding.series_ids:
+        if finding.kind == "harvested_source" and inferred_ctx:
+            chart_dir = CHARTS_DIR / today.isoformat()
+            chart_dir.mkdir(parents=True, exist_ok=True)
+            slug_short = finding.slug[:40].replace("/", "-")
+            p = _chart1_context_series(list(inferred_ctx.keys()), chart_dir, slug_short, today)
+            return [p] if p else []
         return []
 
     chart_dir = CHARTS_DIR / today.isoformat()
@@ -1581,8 +1694,16 @@ def compose_email(pick: LessonPick, today: date | None = None) -> ComposedEmail:
     if not ctx:
         logger.warning("No data context built for finding %s — series may not be tracked.", pick.finding.slug)
 
-    draft = draft_email(pick, ctx)
-    fc = fact_check_draft(draft, pick, ctx)
+    # For harvested findings with no tagged series, infer contextually relevant FRED series.
+    inferred_ctx: dict[str, SeriesSnapshot] = {}
+    if not pick.finding.series_ids and pick.finding.kind == "harvested_source":
+        inferred_ids = _infer_context_series(pick.finding)
+        if inferred_ids:
+            logger.info("Harvested finding has no series; inferring context from: %s", inferred_ids)
+            inferred_ctx = _build_series_snapshots(inferred_ids)
+
+    draft = draft_email(pick, ctx, inferred_ctx=inferred_ctx)
+    fc = fact_check_draft(draft, pick, ctx, inferred_ctx=inferred_ctx)
 
     flags = fc.get("flags", [])
     approved = fc.get("approved", True)
@@ -1597,7 +1718,7 @@ def compose_email(pick: LessonPick, today: date | None = None) -> ComposedEmail:
         draft = revise_with_citations(draft, citation_result)
         logger.info("Citations added: %d", citation_count)
 
-    chart_paths = generate_charts(pick, ctx, today)
+    chart_paths = generate_charts(pick, ctx, today, inferred_ctx=inferred_ctx)
     chart_dir = CHARTS_DIR / today.isoformat()
     chart_dir.mkdir(parents=True, exist_ok=True)
     equation_path = generate_equation_image(pick.finding, chart_dir, today)
