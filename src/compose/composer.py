@@ -977,6 +977,65 @@ def fact_check_draft(
 
 # ---------- citation check (web-search pass) ----------
 
+_KIND_GROUPS: dict[str, list[str]] = {
+    "fomc_event_study": ["B"],
+    "structural_break": ["C", "D", "E"],
+    "correlation_shift": ["D", "G"],
+    "cross_asset_factor": ["D", "N"],
+    "bond_predictability": ["M", "C"],
+    "ns_factor_extreme": ["C"],
+    "recession_prediction": ["F", "G"],
+    "notable_move_level": ["G", "D"],
+    "harvested_source": [],
+}
+
+
+def _matching_library_papers(
+    finding: "Finding",
+    extra_series: "list[str] | None" = None,
+    max_papers: int = 5,
+) -> list:
+    """Return paper library entries relevant to this finding.
+
+    Matching priority: (1) FRED series overlap, (2) finding-kind → group mapping,
+    (3) keyword search on title/claim.
+    """
+    from src.research.paper_library import papers_for_series, search_papers, filter_papers
+
+    all_series = list(finding.series_ids or []) + list(extra_series or [])
+    seen: set[str] = set()
+    scored: list[tuple[int, object]] = []
+
+    for sid in all_series:
+        for paper in papers_for_series(sid):
+            if paper.title not in seen:
+                seen.add(paper.title)
+                scored.append((paper.macro_relevance + paper.fred_implementability, paper))
+
+    relevant_groups = _KIND_GROUPS.get(finding.kind, [])
+    if relevant_groups:
+        for paper in filter_papers(min_macro_relevance=4, min_fred_implementability=3):
+            if paper.group in relevant_groups and paper.title not in seen:
+                seen.add(paper.title)
+                scored.append((paper.macro_relevance + paper.fred_implementability, paper))
+
+    import re as _re
+    text = f"{finding.title or ''} {finding.claim or ''}".lower()
+    kw_hits = set(_re.findall(r'\b[a-z]{4,}\b', text)) & {
+        "inflation", "yield", "curve", "credit", "recession", "dollar", "equity",
+        "volatility", "spread", "fomc", "breakeven", "regime", "momentum", "factor",
+        "risk", "commodity", "exchange", "currency", "housing", "wage", "labor",
+    }
+    for word in kw_hits:
+        for paper in search_papers(word):
+            if paper.title not in seen:
+                seen.add(paper.title)
+                scored.append((paper.macro_relevance + paper.fred_implementability - 1, paper))
+
+    scored.sort(key=lambda x: -x[0])
+    return [p for _, p in scored[:max_papers]]
+
+
 def _web_search(query: str, max_results: int = 5) -> str:
     from ddgs import DDGS
     results = []
@@ -1006,7 +1065,11 @@ def _web_fetch(url: str, max_chars: int = 6000) -> str:
         return f"Fetch failed: {exc}"
 
 
-def citation_check_draft(draft: dict, pick: LessonPick) -> dict:
+def citation_check_draft(
+    draft: dict,
+    pick: LessonPick,
+    inferred_ctx: "dict[str, SeriesSnapshot] | None" = None,
+) -> dict:
     """Agentic web-search pass: find primary sources for mechanistic claims.
 
     Returns {"citations": [...], "unsourced": [...]}.
@@ -1014,14 +1077,32 @@ def citation_check_draft(draft: dict, pick: LessonPick) -> dict:
     client = _client()
     finding = pick.finding
 
+    extra_series = list(inferred_ctx.keys()) if inferred_ctx else None
+    library_papers = _matching_library_papers(finding, extra_series=extra_series)
+    if library_papers:
+        library_lines = [
+            "LIBRARY CANDIDATES (from curated catalog — search for these specific papers "
+            "first to find their canonical URLs and verify they address the claims, before "
+            "doing free-form web searches):"
+        ]
+        for i, p in enumerate(library_papers, 1):
+            blurb = p.notes[:120].rstrip() if p.notes else p.methodology[:120].rstrip()
+            library_lines.append(f"  {i}. \"{p.title}\" — {blurb}")
+        library_section = "\n".join(library_lines) + "\n\n"
+        logger.info("Citation pass: %d library candidates for %s", len(library_papers), finding.slug)
+    else:
+        library_section = ""
+
     user_content = (
         f"EMAIL DRAFT (body text — identify mechanistic/interpretive claims to source):\n"
         f"{draft.get('body_text', '')}\n\n"
         f"FINDING RECORD (already-sourced claims are in finding.sources — do not re-source these):\n"
         f"{json.dumps(_finding_to_dict(finding), indent=2)}\n\n"
+        f"{library_section}"
         "Identify up to 3 specific mechanistic or interpretive claims in the draft that lack "
-        "primary source support. Search for academic papers or institutional research notes "
-        "that support each claim. Fetch the most promising URL to verify relevance. "
+        "primary source support. Search for the library candidates above (or do free-form web "
+        "searches if none match) to find academic papers or institutional research notes that "
+        "support each claim. Fetch the most promising URL to verify relevance. "
         "Return JSON."
     )
 
@@ -1712,7 +1793,7 @@ def compose_email(pick: LessonPick, today: date | None = None) -> ComposedEmail:
         logger.info("Fact-check flags (%d): %s", len(flags), "; ".join(flags))
 
     # Web-search citation pass: find primary sources for mechanistic claims
-    citation_result = citation_check_draft(draft, pick)
+    citation_result = citation_check_draft(draft, pick, inferred_ctx=inferred_ctx)
     citation_count = len(citation_result.get("citations", []))
     if citation_count:
         draft = revise_with_citations(draft, citation_result)
