@@ -11,8 +11,10 @@ from __future__ import annotations
 
 import logging
 from dataclasses import dataclass, field
+
+logger = logging.getLogger(__name__)
 from datetime import date
-from typing import Iterable
+from typing import Any, Iterable
 
 import pandas as pd
 
@@ -535,7 +537,8 @@ def scan_bond_predictability() -> tuple[list[DetectorHit], pd.DataFrame, list[tu
     try:
         rx = approximate_excess_returns(yields, risk_free_col=1, horizon_months=12)
         reg_results = cp_regression(rx, cp, hac_lags=12)
-    except Exception:
+    except Exception as e:
+        logger.warning("CP regression failed — signal detection will run without regression results: %s", e)
         rx = pd.DataFrame()
         reg_results = []
 
@@ -838,29 +841,37 @@ def scan_cross_asset_factors() -> tuple[list[DetectorHit], pd.DataFrame, list[tu
     returns_aligned = returns_df.loc[aligned_idx]
     factors_aligned = factors_df.loc[aligned_idx]
 
+    def _run_fm_split(
+        mask_a: pd.Series,
+        label_a: str,
+        label_b: str,
+        small_label: str,
+    ) -> tuple[FamaMacBethResult | None, FamaMacBethResult | None]:
+        """Run Fama-MacBeth on two complementary sub-samples; return (result_a, result_b)."""
+        mask_b = ~mask_a
+        result_a = result_b = None
+        for mask, label in ((mask_a, label_a), (mask_b, label_b)):
+            if mask.sum() >= _REGIME_MIN_OBS:
+                r = fama_macbeth_factor_model(
+                    returns_aligned.loc[mask], factors_aligned.loc[mask], min_obs=_REGIME_MIN_OBS,
+                )
+                if r.fit_ok:
+                    _append_rows(r, label)
+                    if label == label_a:
+                        result_a = r
+                    else:
+                        result_b = r
+            elif label == label_a:
+                skipped.append(("cross_asset_factors", f"{small_label} sub-sample too small ({int(mask.sum())} obs)"))
+        return result_a, result_b
+
     # NBER recession/expansion
     usrec = _monthly_end("USREC")
     rec_result: FamaMacBethResult | None = None
     exp_result: FamaMacBethResult | None = None
     if usrec is not None:
         rec_mask = usrec.reindex(aligned_idx).fillna(0).astype(bool)
-        exp_mask = ~rec_mask
-        if rec_mask.sum() >= _REGIME_MIN_OBS:
-            r = fama_macbeth_factor_model(
-                returns_aligned.loc[rec_mask], factors_aligned.loc[rec_mask], min_obs=_REGIME_MIN_OBS,
-            )
-            if r.fit_ok:
-                rec_result = r
-                _append_rows(r, "recession")
-        else:
-            skipped.append(("cross_asset_factors", f"recession sub-sample too small ({int(rec_mask.sum())} obs)"))
-        if exp_mask.sum() >= _REGIME_MIN_OBS:
-            r = fama_macbeth_factor_model(
-                returns_aligned.loc[exp_mask], factors_aligned.loc[exp_mask], min_obs=_REGIME_MIN_OBS,
-            )
-            if r.fit_ok:
-                exp_result = r
-                _append_rows(r, "expansion")
+        rec_result, exp_result = _run_fm_split(rec_mask, "recession", "expansion", "recession")
 
     # High / low inflation (CPI YoY > 3%)
     hi_result: FamaMacBethResult | None = None
@@ -868,23 +879,7 @@ def scan_cross_asset_factors() -> tuple[list[DetectorHit], pd.DataFrame, list[tu
     if cpi is not None and len(cpi) > 13:
         cpi_yoy = (cpi / cpi.shift(12) - 1) * 100
         hi_mask = cpi_yoy.reindex(aligned_idx).ffill().fillna(0) > 3.0
-        lo_mask = ~hi_mask
-        if hi_mask.sum() >= _REGIME_MIN_OBS:
-            r = fama_macbeth_factor_model(
-                returns_aligned.loc[hi_mask], factors_aligned.loc[hi_mask], min_obs=_REGIME_MIN_OBS,
-            )
-            if r.fit_ok:
-                hi_result = r
-                _append_rows(r, "high_inflation")
-        else:
-            skipped.append(("cross_asset_factors", f"high-inflation sub-sample too small ({int(hi_mask.sum())} obs)"))
-        if lo_mask.sum() >= _REGIME_MIN_OBS:
-            r = fama_macbeth_factor_model(
-                returns_aligned.loc[lo_mask], factors_aligned.loc[lo_mask], min_obs=_REGIME_MIN_OBS,
-            )
-            if r.fit_ok:
-                lo_result = r
-                _append_rows(r, "low_inflation")
+        hi_result, lo_result = _run_fm_split(hi_mask, "high_inflation", "low_inflation", "high-inflation")
 
     # --- Compute regime diffs for evidence enrichment ---
     regime_diffs: dict[str, dict[str, tuple[float, float]]] = {}
@@ -1136,8 +1131,8 @@ def _build_key_stats(series_ids: tuple[str, ...]) -> dict[str, dict]:
                 "units": str(meta.get("units", "")),
                 "title": str(meta.get("title", sid)),
             }
-        except Exception:
-            pass
+        except Exception as e:
+            logger.warning("_build_key_stats: skipping %s — %s", sid, e)
     return stats
 
 
@@ -1168,203 +1163,224 @@ def _seed_from_hit(hit: DetectorHit, today: date) -> TopicSeed:
 # Hit → Finding conversion
 # -------------------------------------------------------------------------
 
-def _finding_from_hit(hit: DetectorHit, today: date) -> Finding:
-    """Build a Finding (prose + structure) from a detector hit.
+def _make_finding(hit: DetectorHit, today: date, slug: str, title: str, claim: str) -> Finding:
+    return Finding(
+        slug=slug, title=title, kind=hit.kind, discovered=today,
+        series_ids=hit.series_ids, window=hit.window, claim=claim,
+        evidence=hit.evidence, interpretation="", sources=[], status="new", score=hit.score,
+    )
 
-    Prose here is intentionally templated and minimal — it documents *what*
-    was found in neutral language. The email composer generates the
-    reader-facing narrative separately, consulting both the prose and the
-    raw evidence.
-    """
+
+def _ffh_notable_move_level(hit: DetectorHit, today: date) -> Finding:
     ev = hit.evidence
-    if hit.kind == "notable_move_level":
-        sid = hit.series_ids[0]
-        pct = ev["percentile"]
-        title = f"{sid} latest reading is at {pct:.1%} of its full history"
-        slug = make_slug(hit.kind, hit.series_ids, extra=ev["latest_date"])
-        claim = (
+    sid = hit.series_ids[0]
+    pct = ev["percentile"]
+    return _make_finding(hit, today,
+        slug=make_slug(hit.kind, hit.series_ids, extra=ev["latest_date"]),
+        title=f"{sid} latest reading is at {pct:.1%} of its full history",
+        claim=(
             f"{sid} closed at {ev['latest_value']:.4g} on {ev['latest_date']}, "
             f"ranking at the {pct:.1%} of its {ev['n']}-observation history "
             f"(min {ev['full_min']:.4g}, median {ev['full_median']:.4g}, max {ev['full_max']:.4g})."
-        )
-    elif hit.kind == "notable_move_change":
-        sid = hit.series_ids[0]
-        z = ev["robust_z"]
-        title = f"{sid} one-period change is {z:+.2f} robust-z vs history"
-        slug = make_slug(hit.kind, hit.series_ids, extra=ev["latest_date"])
-        claim = (
+        ),
+    )
+
+
+def _ffh_notable_move_change(hit: DetectorHit, today: date) -> Finding:
+    ev = hit.evidence
+    sid = hit.series_ids[0]
+    z = ev["robust_z"]
+    return _make_finding(hit, today,
+        slug=make_slug(hit.kind, hit.series_ids, extra=ev["latest_date"]),
+        title=f"{sid} one-period change is {z:+.2f} robust-z vs history",
+        claim=(
             f"On {ev['latest_date']}, {sid} moved by {ev['latest_change']:+.4g}, a "
             f"robust z-score of {z:+.2f} against {ev['n']} prior one-period changes "
             f"(median change {ev['median_change']:+.4g}, MAD {ev['mad_change']:.4g})."
-        )
-    elif hit.kind == "correlation_shift":
-        a, b = hit.series_ids
-        label = ev.get("label", f"{a} vs {b}")
-        title = f"{label}: rolling correlation shifted by {ev['shift']:+.2f}"
-        slug = make_slug(hit.kind, hit.series_ids, extra=f"w{ev.get('method','')}")
-        claim = (
+        ),
+    )
+
+
+def _ffh_correlation_shift(hit: DetectorHit, today: date) -> Finding:
+    ev = hit.evidence
+    a, b = hit.series_ids
+    label = ev.get("label", f"{a} vs {b}")
+    return _make_finding(hit, today,
+        slug=make_slug(hit.kind, hit.series_ids, extra=f"w{ev.get('method','')}"),
+        title=f"{label}: rolling correlation shifted by {ev['shift']:+.2f}",
+        claim=(
             f"Full-sample {ev['method']} correlation (on {'returns' if ev['on_returns'] else 'levels'}) "
             f"between {a} and {b} is {ev['baseline_correlation']:+.2f} with subperiod stability spread "
             f"{ev['baseline_stability_spread']:.2f}; the most recent rolling value is "
             f"{ev['recent_correlation']:+.2f} as of {ev['recent_date']}, a shift of {ev['shift']:+.2f}. "
             f"The threshold was first crossed at {ev['crossed_threshold_at']}."
+        ),
+    )
+
+
+def _ffh_lead_lag_change(hit: DetectorHit, today: date) -> Finding:
+    ev = hit.evidence
+    a, b = hit.series_ids
+    label = ev.get("label", f"{a} vs {b}")
+    if ev["lag_shift"] == 0:
+        title = (
+            f"{label}: peak correlation at lag {ev['hist_peak_lag']:+d} moved "
+            f"{ev['hist_peak_correlation']:+.2f} → {ev['recent_peak_correlation']:+.2f}"
         )
-    elif hit.kind == "lead_lag_change":
-        a, b = hit.series_ids
-        label = ev.get("label", f"{a} vs {b}")
-        if ev["lag_shift"] == 0:
-            title = (
-                f"{label}: peak correlation at lag {ev['hist_peak_lag']:+d} moved "
-                f"{ev['hist_peak_correlation']:+.2f} → {ev['recent_peak_correlation']:+.2f}"
-            )
-        else:
-            title = (
-                f"{label}: lead-lag peak moved from lag {ev['hist_peak_lag']:+d} "
-                f"to lag {ev['recent_peak_lag']:+d}"
-            )
-        slug = make_slug(hit.kind, hit.series_ids)
-        claim = (
+    else:
+        title = (
+            f"{label}: lead-lag peak moved from lag {ev['hist_peak_lag']:+d} "
+            f"to lag {ev['recent_peak_lag']:+d}"
+        )
+    return _make_finding(hit, today,
+        slug=make_slug(hit.kind, hit.series_ids),
+        title=title,
+        claim=(
             f"Historical ({ev['n_hist']} obs) peak cross-correlation for {a} vs {b} is "
             f"{ev['hist_peak_correlation']:+.2f} at lag {ev['hist_peak_lag']:+d}; in the recent "
             f"{ev['n_recent']}-obs tail, the peak is {ev['recent_peak_correlation']:+.2f} at lag "
             f"{ev['recent_peak_lag']:+d} ({ev['method']}, "
             f"{'returns' if ev['on_returns'] else 'levels'})."
-        )
-    elif hit.kind == "regime_transition":
-        sid = hit.series_ids[0]
-        title = f"{sid} entered the {ev['new_regime']} regime on {ev['transition_date']}"
-        slug = make_slug(hit.kind, hit.series_ids, extra=ev["transition_date"])
-        claim = (
+        ),
+    )
+
+
+def _ffh_regime_transition(hit: DetectorHit, today: date) -> Finding:
+    ev = hit.evidence
+    sid = hit.series_ids[0]
+    return _make_finding(hit, today,
+        slug=make_slug(hit.kind, hit.series_ids, extra=ev["transition_date"]),
+        title=f"{sid} entered the {ev['new_regime']} regime on {ev['transition_date']}",
+        claim=(
             f"{sid} crossed from the {ev['prior_regime']} to the {ev['new_regime']} quantile regime "
             f"on {ev['transition_date']} after {ev['prior_regime_duration_days']} days in the prior "
             f"regime. Latest reading {ev['latest_value']:.4g} (regime cut-points at "
             f"{[round(v, 4) for v in ev['cut_values']]})."
-        )
-    elif hit.kind == "structural_break":
-        ev = hit.evidence
-        is_corr = ev.get("is_correlation", False)
-        is_spread = ev.get("is_spread", False)
-        a_id = ev.get("series_a") or ev["series_id"]
-        b_id = ev.get("series_b")
-        label = ev.get("name") or ev.get("label", ev["series_id"])
-        break_dates_str = ", ".join(ev["break_dates"])
-        last_mean = ev["last_regime_mean"]
-        prior_mean = ev["prior_regime_mean"]
-        shift = ev["mean_shift"]
-        most_recent = ev["most_recent_break_date"]
-        n_breaks = ev["n_breaks"]
+        ),
+    )
 
-        if is_corr:
-            title = (
-                f"{label}: rolling correlation structural break at {most_recent} "
-                f"(mean shift {prior_mean:+.2f} → {last_mean:+.2f})"
-            )
-            slug = make_slug("structural_break_corr", (a_id, b_id or ""))
-            regime_lines = "; ".join(
-                f"regime {r['regime']}: {r['start'][:7]}–{r['end'][:7]}, mean={r['mean']:+.2f}"
-                for r in ev["regime_stats"]
-            )
-            claim = (
+
+def _ffh_structural_break(hit: DetectorHit, today: date) -> Finding:
+    ev = hit.evidence
+    is_corr = ev.get("is_correlation", False)
+    is_spread = ev.get("is_spread", False)
+    a_id = ev.get("series_a") or ev["series_id"]
+    b_id = ev.get("series_b")
+    label = ev.get("name") or ev.get("label", ev["series_id"])
+    break_dates_str = ", ".join(ev["break_dates"])
+    last_mean, prior_mean, shift = ev["last_regime_mean"], ev["prior_regime_mean"], ev["mean_shift"]
+    most_recent, n_breaks = ev["most_recent_break_date"], ev["n_breaks"]
+
+    if is_corr:
+        regime_lines = "; ".join(
+            f"regime {r['regime']}: {r['start'][:7]}–{r['end'][:7]}, mean={r['mean']:+.2f}"
+            for r in ev["regime_stats"]
+        )
+        return _make_finding(hit, today,
+            slug=make_slug("structural_break_corr", (a_id, b_id or "")),
+            title=f"{label}: rolling correlation structural break at {most_recent} (mean shift {prior_mean:+.2f} → {last_mean:+.2f})",
+            claim=(
                 f"Bai-Perron (Dynp, l2 cost, BIC-selected) finds {n_breaks} structural break(s) "
                 f"in the monthly rolling Spearman correlation between {a_id} and {b_id}. "
                 f"Break date(s): {break_dates_str}. "
                 f"Mean correlation shifted from {prior_mean:+.2f} (prior regime) to "
                 f"{last_mean:+.2f} (current regime), a change of {shift:+.2f}. "
                 f"Regimes: {regime_lines}."
-            )
-        elif is_spread:
-            sid_a_raw = hit.series_ids[0] if len(hit.series_ids) > 0 else a_id
-            sid_b_raw = hit.series_ids[1] if len(hit.series_ids) > 1 else "?"
-            title = (
-                f"{label} ({sid_a_raw}−{sid_b_raw}): spread structural break at {most_recent} "
-                f"(mean shift {prior_mean:+.4g} → {last_mean:+.4g})"
-            )
-            slug = make_slug("structural_break_spread", (sid_a_raw, sid_b_raw))
-            regime_lines = "; ".join(
-                f"regime {r['regime']}: {r['start'][:7]}–{r['end'][:7]}, mean={r['mean']:.4g}"
-                for r in ev["regime_stats"]
-            )
-            claim = (
+            ),
+        )
+    elif is_spread:
+        sid_a_raw = hit.series_ids[0] if hit.series_ids else a_id
+        sid_b_raw = hit.series_ids[1] if len(hit.series_ids) > 1 else "?"
+        regime_lines = "; ".join(
+            f"regime {r['regime']}: {r['start'][:7]}–{r['end'][:7]}, mean={r['mean']:.4g}"
+            for r in ev["regime_stats"]
+        )
+        return _make_finding(hit, today,
+            slug=make_slug("structural_break_spread", (sid_a_raw, sid_b_raw)),
+            title=f"{label} ({sid_a_raw}−{sid_b_raw}): spread structural break at {most_recent} (mean shift {prior_mean:+.4g} → {last_mean:+.4g})",
+            claim=(
                 f"Bai-Perron (Dynp, l2 cost, BIC-selected) finds {n_breaks} structural break(s) "
                 f"in the derived spread {label} ({sid_a_raw} minus {sid_b_raw}). "
                 f"Break date(s): {break_dates_str}. "
                 f"Spread mean shifted from {prior_mean:.4g} (prior regime) to "
                 f"{last_mean:.4g} (current regime), shift {shift:+.4g}. "
-                f"Regimes: {regime_lines}. "
-                f"Basis: {ev.get('basis', '')}."
-            )
-        else:
-            sid = ev["series_id"]
-            title = (
-                f"{sid}: structural break at {most_recent} "
-                f"(mean shift {prior_mean:+.4g} → {last_mean:+.4g})"
-            )
-            slug = make_slug("structural_break", (sid,))
-            regime_lines = "; ".join(
-                f"regime {r['regime']}: {r['start'][:7]}–{r['end'][:7]}, mean={r['mean']:.4g}"
-                for r in ev["regime_stats"]
-            )
-            claim = (
+                f"Regimes: {regime_lines}. Basis: {ev.get('basis', '')}."
+            ),
+        )
+    else:
+        sid = ev["series_id"]
+        regime_lines = "; ".join(
+            f"regime {r['regime']}: {r['start'][:7]}–{r['end'][:7]}, mean={r['mean']:.4g}"
+            for r in ev["regime_stats"]
+        )
+        return _make_finding(hit, today,
+            slug=make_slug("structural_break", (sid,)),
+            title=f"{sid}: structural break at {most_recent} (mean shift {prior_mean:+.4g} → {last_mean:+.4g})",
+            claim=(
                 f"Bai-Perron (Dynp, l2 cost, BIC-selected) finds {n_breaks} structural break(s) "
                 f"in {sid}. Break date(s): {break_dates_str}. "
                 f"Mean in the current regime ({last_mean:.4g}) vs prior regime ({prior_mean:.4g}), "
                 f"shift {shift:+.4g}. Regimes: {regime_lines}."
-            )
-    elif hit.kind == "cointegration_break":
-        a, b = hit.series_ids
-        title = f"{a} vs {b}: cointegration present in full sample but not in recent window"
-        slug = make_slug(hit.kind, hit.series_ids)
-        claim = (
+            ),
+        )
+
+
+def _ffh_cointegration_break(hit: DetectorHit, today: date) -> Finding:
+    ev = hit.evidence
+    a, b = hit.series_ids
+    return _make_finding(hit, today,
+        slug=make_slug(hit.kind, hit.series_ids),
+        title=f"{a} vs {b}: cointegration present in full sample but not in recent window",
+        claim=(
             f"Engle-Granger p-value over the full sample (n={ev['full_n']}) is {ev['full_sample_p']:.3f} "
             f"(reject no-cointegration at 5%); restricted to the last {ev['recent_n']} observations "
             f"it is {ev['recent_p']:.3f} (cannot reject). The equilibrium relationship appears to "
             f"have weakened or broken."
-        )
-    elif hit.kind == "inflation_episode_anomaly":
-        check = ev["check"]
-        ep_start = ev["current_episode_start"][:7]
-        driver = ev["current_driver"]
-        if check == "duration":
-            curr = int(ev["current_value"])
-            title = (
-                f"Current inflation episode ({ep_start}–, {driver}) duration "
-                f"of {curr}m is at {ev['percentile_rank']:.0%} of historical distribution"
-            )
-            slug = make_slug("inflation_episode_duration", ("CPIAUCSL",))
-            claim = (
+        ),
+    )
+
+
+def _ffh_inflation_episode_anomaly(hit: DetectorHit, today: date) -> Finding:
+    ev = hit.evidence
+    ep_start = ev["current_episode_start"][:7]
+    driver = ev["current_driver"]
+    if ev["check"] == "duration":
+        curr = int(ev["current_value"])
+        return _make_finding(hit, today,
+            slug=make_slug("inflation_episode_duration", ("CPIAUCSL",)),
+            title=f"Current inflation episode ({ep_start}–, {driver}) duration of {curr}m is at {ev['percentile_rank']:.0%} of historical distribution",
+            claim=(
                 f"The current CPI inflation episode beginning {ep_start} has lasted {curr} months "
                 f"(driver: {driver}), placing it at the {ev['percentile_rank']:.0%} percentile of "
                 f"{ev['n_historical']} historical episodes since 1950 "
                 f"(median {ev['hist_median']:.0f}m, 75th pct {ev['hist_p75']:.0f}m, max {ev['hist_max']:.0f}m). "
                 f"Real fed funds minimum during episode: {ev['current_real_ff_min']:.2f}pp. "
                 f"Unemployment change: {ev['current_unrate_change']:+.2f}pp."
-            )
-        else:
-            curr_peak = ev["current_peak_value"]
-            peak_dt = ev["current_peak_date"][:7]
-            title = (
-                f"Current inflation episode peaked at {curr_peak:.1f}% YoY ({peak_dt}), "
-                f"{ev['percentile_rank']:.0%} of historical distribution"
-            )
-            slug = make_slug("inflation_episode_peak", ("CPIAUCSL",))
-            claim = (
+            ),
+        )
+    else:
+        curr_peak = ev["current_peak_value"]
+        peak_dt = ev["current_peak_date"][:7]
+        return _make_finding(hit, today,
+            slug=make_slug("inflation_episode_peak", ("CPIAUCSL",)),
+            title=f"Current inflation episode peaked at {curr_peak:.1f}% YoY ({peak_dt}), {ev['percentile_rank']:.0%} of historical distribution",
+            claim=(
                 f"CPI YoY peaked at {curr_peak:.2f}% in {peak_dt} in the current episode "
                 f"(driver: {driver}), ranking at the {ev['percentile_rank']:.0%} percentile "
                 f"of {ev['n_historical']} historical episodes "
                 f"(median peak {ev['hist_median']:.1f}%, 75th pct {ev['hist_p75']:.1f}%, "
                 f"max {ev['hist_max']:.1f}%). Episode duration: {ev['current_duration_months']} months."
-            )
-    elif hit.kind == "breakeven_anomaly":
-        tenor = ev["tenor"]
-        rp = ev["risk_premium_proxy"]
-        direction = ev["direction"]
-        z = ev["robust_z"]
-        title = (
-            f"{tenor} inflation risk premium proxy {direction} at {rp:.2f}pp "
-            f"(robust z = {z:+.2f})"
+            ),
         )
-        slug = make_slug("breakeven_anomaly", hit.series_ids, extra=tenor)
-        claim = (
+
+
+def _ffh_breakeven_anomaly(hit: DetectorHit, today: date) -> Finding:
+    ev = hit.evidence
+    tenor, rp, z = ev["tenor"], ev["risk_premium_proxy"], ev["robust_z"]
+    return _make_finding(hit, today,
+        slug=make_slug("breakeven_anomaly", hit.series_ids, extra=tenor),
+        title=f"{tenor} inflation risk premium proxy {ev['direction']} at {rp:.2f}pp (robust z = {z:+.2f})",
+        claim=(
             f"The {tenor} breakeven inflation risk premium proxy (T10YIE minus Michigan 1y survey "
             f"expectation) stands at {rp:.2f}pp as of {ev['latest_date']}, "
             f"a robust z-score of {z:+.2f} vs {ev['n_months']} months of history "
@@ -1373,138 +1389,127 @@ def _finding_from_hit(hit: DetectorHit, today: date) -> Finding:
             f"The 5y5y forward breakeven stands at {ev['latest_five_y_five_y']:.2f}pp "
             f"(medium-term expectations anchor). "
             f"Note: the proxy conflates the pure inflation risk premium and TIPS liquidity premium."
-        )
-    elif hit.kind == "cp_factor_signal":
-        direction = ev["direction"]
-        z = ev["robust_z"]
-        cp_val = ev["cp_value"]
-        r2_5y = ev["r2_by_maturity"].get(5, float("nan"))
-        r2_10y = ev["r2_by_maturity"].get(10, float("nan"))
-        title = (
-            f"Cochrane-Piazzesi bond risk premium factor {direction} "
-            f"(robust z = {z:+.2f}, {ev['percentile_rank']:.0%} pctile)"
-        )
-        slug = make_slug("cp_factor_signal", hit.series_ids)
-        r2_str = ""
-        if r2_5y == r2_5y:  # not nan
-            r2_str = f" Predictive R² (CP factor on 1y excess returns): 5y {r2_5y:.1%}, 10y {r2_10y:.1%}."
-        claim = (
+        ),
+    )
+
+
+def _ffh_cp_factor_signal(hit: DetectorHit, today: date) -> Finding:
+    ev = hit.evidence
+    z, cp_val = ev["robust_z"], ev["cp_value"]
+    r2_5y = ev["r2_by_maturity"].get(5, float("nan"))
+    r2_10y = ev["r2_by_maturity"].get(10, float("nan"))
+    r2_str = f" Predictive R² (CP factor on 1y excess returns): 5y {r2_5y:.1%}, 10y {r2_10y:.1%}." if r2_5y == r2_5y else ""
+    return _make_finding(hit, today,
+        slug=make_slug("cp_factor_signal", hit.series_ids),
+        title=f"Cochrane-Piazzesi bond risk premium factor {ev['direction']} (robust z = {z:+.2f}, {ev['percentile_rank']:.0%} pctile)",
+        claim=(
             f"The Cochrane-Piazzesi factor — first principal component of the Treasury forward rate "
             f"curve (DGS1–DGS10) — stands at {cp_val:.3f} as of {ev['latest_date']}, "
             f"a robust z-score of {z:+.2f} vs {ev['n_months']} months of history "
             f"(p10 {ev['hist_p10']:.3f}, median {ev['hist_median']:.3f}, p90 {ev['hist_p90']:.3f}). "
             f"High CP factor historically predicts high 1-year excess Treasury returns "
             f"(Cochrane & Piazzesi 2005, AER 95(1)).{r2_str}"
-        )
-    elif hit.kind == "spread_extreme":
-        sid_a, sid_b = hit.series_ids[:2]
-        name = ev.get("name", f"{sid_a}−{sid_b}")
-        pct = ev["percentile"]
-        val = ev["latest_value"]
-        title = f"{name}: spread at {pct:.1%} of full history ({val:+.3g})"
-        slug = make_slug("spread_extreme", (sid_a, sid_b), extra=ev["latest_date"])
-        claim = (
-            f"The derived spread {name} ({sid_a} minus {sid_b}) stands at {val:+.4g} "
-            f"as of {ev['latest_date']}, ranking at the {pct:.1%} of its "
+        ),
+    )
+
+
+def _ffh_spread_extreme(hit: DetectorHit, today: date) -> Finding:
+    ev = hit.evidence
+    sid_a, sid_b = hit.series_ids[:2]
+    name = ev.get("name", f"{sid_a}−{sid_b}")
+    return _make_finding(hit, today,
+        slug=make_slug("spread_extreme", (sid_a, sid_b), extra=ev["latest_date"]),
+        title=f"{name}: spread at {ev['percentile']:.1%} of full history ({ev['latest_value']:+.3g})",
+        claim=(
+            f"The derived spread {name} ({sid_a} minus {sid_b}) stands at {ev['latest_value']:+.4g} "
+            f"as of {ev['latest_date']}, ranking at the {ev['percentile']:.1%} of its "
             f"{ev['n']}-observation history "
-            f"(min {ev['full_min']:+.4g}, median {ev['full_median']:+.4g}, "
-            f"max {ev['full_max']:+.4g}). "
+            f"(min {ev['full_min']:+.4g}, median {ev['full_median']:+.4g}, max {ev['full_max']:+.4g}). "
             f"Theoretical basis: {ev.get('basis', '')}."
-        )
-    elif hit.kind == "decomposition_shift":
-        total = ev["total_series"]
-        comp = ev["component"]
-        hist_share = ev["hist_share"]
-        recent_share = ev["recent_share"]
-        shift = ev["share_shift"]
-        direction = ev["direction"]
-        name = ev.get("name", f"{total} decomposition")
-        title = (
-            f"{name}: {comp} contribution {direction} "
-            f"({hist_share:.0%} → {recent_share:.0%} of {total} moves)"
-        )
-        slug = make_slug("decomposition_shift", (total, comp))
-        claim = (
+        ),
+    )
+
+
+def _ffh_decomposition_shift(hit: DetectorHit, today: date) -> Finding:
+    ev = hit.evidence
+    total, comp = ev["total_series"], ev["component"]
+    name = ev.get("name", f"{total} decomposition")
+    shift = ev["share_shift"]
+    return _make_finding(hit, today,
+        slug=make_slug("decomposition_shift", (total, comp)),
+        title=f"{name}: {comp} contribution {ev['direction']} ({ev['hist_share']:.0%} → {ev['recent_share']:.0%} of {total} moves)",
+        claim=(
             f"In the recent {ev['recent_obs']} observations, {comp} accounted for "
-            f"{recent_share:.0%} of {total} moves (signed contribution share), "
-            f"vs a historical mean of {hist_share:.0%} over {ev['hist_obs']} prior observations "
+            f"{ev['recent_share']:.0%} of {total} moves (signed contribution share), "
+            f"vs a historical mean of {ev['hist_share']:.0%} over {ev['hist_obs']} prior observations "
             f"(shift: {shift:+.0%}). "
             f"This indicates the recent {total} move has been disproportionately "
             f"{'driven by' if shift > 0 else 'suppressed relative to'} {comp}. "
             f"Theoretical basis: {ev.get('basis', '')}."
-        )
-    elif hit.kind == "btp_bund_regime":
-        val_bp = ev["latest_value_bp"]
-        regime = ev["current_regime_label"]
-        crossed = ev["regime_crossed"]
-        prior = ev["prior_regime"]
-        pct = ev["percentile"]
-        cross_note = (
-            f" Regime change: was '{prior}', now '{ev['current_regime']}'."
-            if crossed else ""
-        )
-        title = (
-            f"BTP-Bund spread {val_bp:.0f}bp ({ev['current_regime']}): "
-            f"{pct:.1%} of full history"
-        )
-        slug = make_slug("btp_bund_regime", hit.series_ids, extra=ev["latest_date"])
-        claim = (
+        ),
+    )
+
+
+def _ffh_btp_bund_regime(hit: DetectorHit, today: date) -> Finding:
+    ev = hit.evidence
+    cross_note = (
+        f" Regime change: was '{ev['prior_regime']}', now '{ev['current_regime']}'."
+        if ev["regime_crossed"] else ""
+    )
+    return _make_finding(hit, today,
+        slug=make_slug("btp_bund_regime", hit.series_ids, extra=ev["latest_date"]),
+        title=f"BTP-Bund spread {ev['latest_value_bp']:.0f}bp ({ev['current_regime']}): {ev['percentile']:.1%} of full history",
+        claim=(
             f"The BTP-Bund 10Y sovereign spread (ECB.IT.10Y minus ECB.DE.10Y) stands at "
-            f"{val_bp:.0f}bp ({ev['latest_value_pp']:.3f}pp) as of {ev['latest_date']}, "
-            f"in the '{ev['current_regime']}' regime ({regime}).{cross_note} "
-            f"Percentile rank vs {ev['n_obs']}-month history: {pct:.1%} "
+            f"{ev['latest_value_bp']:.0f}bp ({ev['latest_value_pp']:.3f}pp) as of {ev['latest_date']}, "
+            f"in the '{ev['current_regime']}' regime ({ev['current_regime_label']}).{cross_note} "
+            f"Percentile rank vs {ev['n_obs']}-month history: {ev['percentile']:.1%} "
             f"(historical median {ev['hist_median_bp']:.0f}bp, 90th pctile {ev['hist_p90_bp']:.0f}bp, "
             f"max {ev['hist_max_bp']:.0f}bp). "
             f"Robust z-score: {ev['z_score']:+.2f}. "
             f"TPI informal trigger: ~200bp; 2022 peak ~230bp."
-        )
-    elif hit.kind == "ns_factor_extreme":
-        level = ev["level"]
-        slope = ev["slope"]
-        curvature = ev["curvature"]
-        level_pct = ev["level_pct"]
-        slope_pct = ev["slope_pct"]
-        curvature_pct = ev["curvature_pct"]
-        n_months = ev["history_n"]
-        title = (
+        ),
+    )
+
+
+def _ffh_ns_factor_extreme(hit: DetectorHit, today: date) -> Finding:
+    ev = hit.evidence
+    return _make_finding(hit, today,
+        slug=make_slug("ns_factor_extreme", hit.series_ids, extra=ev["date"][:7]),
+        title=(
             f"Nelson-Siegel yield curve factors at historical extreme: "
-            f"level={level:.2f}% ({level_pct:.0%} pctile), "
-            f"slope={slope:.2f}% ({slope_pct:.0%} pctile), "
-            f"curvature={curvature:.2f}% ({curvature_pct:.0%} pctile)"
-        )
-        slug = make_slug("ns_factor_extreme", hit.series_ids, extra=ev["date"][:7])
-        claim = (
+            f"level={ev['level']:.2f}% ({ev['level_pct']:.0%} pctile), "
+            f"slope={ev['slope']:.2f}% ({ev['slope_pct']:.0%} pctile), "
+            f"curvature={ev['curvature']:.2f}% ({ev['curvature_pct']:.0%} pctile)"
+        ),
+        claim=(
             f"Fitting the Diebold-Li (2006) Nelson-Siegel model to the Treasury curve "
             f"(DGS1–DGS30) gives three latent factors as of {ev['date']}: "
-            f"level β₀={level:.2f}% ({level_pct:.0%} of {n_months}-month history), "
-            f"slope β₁={slope:.2f}% ({slope_pct:.0%} pctile; negative = upward-sloping curve), "
-            f"curvature β₂={curvature:.2f}% ({curvature_pct:.0%} pctile; positive = medium-term hump). "
+            f"level β₀={ev['level']:.2f}% ({ev['level_pct']:.0%} of {ev['history_n']}-month history), "
+            f"slope β₁={ev['slope']:.2f}% ({ev['slope_pct']:.0%} pctile; negative = upward-sloping curve), "
+            f"curvature β₂={ev['curvature']:.2f}% ({ev['curvature_pct']:.0%} pctile; positive = medium-term hump). "
             f"At least one factor is at or beyond the 10th/90th historical percentile boundary. "
-            f"z-scores: level {ev['level_z']:+.2f}, slope {ev['slope_z']:+.2f}, "
-            f"curvature {ev['curvature_z']:+.2f}."
+            f"z-scores: level {ev['level_z']:+.2f}, slope {ev['slope_z']:+.2f}, curvature {ev['curvature_z']:+.2f}."
+        ),
+    )
+
+
+def _ffh_cross_asset_factor(hit: DetectorHit, today: date) -> Finding:
+    ev = hit.evidence
+    if "significant_factors" in ev:
+        sig = ev["significant_factors"]
+        n_assets, n_obs, c, r2 = ev["n_assets"], ev["n_obs"], ev["shanken_c"], ev["r_squared_xsec"]
+        max_f = max(sig, key=lambda f: abs(ev["t_stats_shanken"].get(f, 0.0)))
+        max_prem = ev["factor_premia_pct_monthly"].get(max_f, 0.0)
+        max_t_s = ev["t_stats_shanken"].get(max_f, 0.0)
+        prem_desc = "; ".join(
+            f"{f}={ev['factor_premia_pct_monthly'].get(f, 0.0):+.3f}%/mo (t_S={ev['t_stats_shanken'].get(f, 0.0):+.2f})"
+            for f in sig
         )
-    elif hit.kind == "cross_asset_factor":
-        slug = make_slug("cross_asset_factor", hit.series_ids)
-        if "significant_factors" in ev:
-            # Full-sample hit
-            sig = ev["significant_factors"]
-            n_assets = ev["n_assets"]
-            n_obs = ev["n_obs"]
-            c = ev["shanken_c"]
-            r2 = ev["r_squared_xsec"]
-            max_f = max(sig, key=lambda f: abs(ev["t_stats_shanken"].get(f, 0.0)))
-            max_prem = ev["factor_premia_pct_monthly"].get(max_f, 0.0)
-            max_t_s = ev["t_stats_shanken"].get(max_f, 0.0)
-            title = (
-                f"Cross-asset factor model ({n_assets} assets, {n_obs}m): "
-                f"{len(sig)} macro factor(s) significantly priced (Shanken)"
-            )
-            prem_desc = "; ".join(
-                f"{f}={ev['factor_premia_pct_monthly'].get(f, 0.0):+.3f}%/mo "
-                f"(t_S={ev['t_stats_shanken'].get(f, 0.0):+.2f})"
-                for f in sig
-            )
-            claim = (
+        return _make_finding(hit, today,
+            slug=make_slug("cross_asset_factor", hit.series_ids),
+            title=f"Cross-asset factor model ({n_assets} assets, {n_obs}m): {len(sig)} macro factor(s) significantly priced (Shanken)",
+            claim=(
                 f"Fama-MacBeth two-pass cross-sectional regression ({n_obs} months, {n_assets} assets: "
                 f"equities, full Treasury curve, HY/IG credit, WTI/Brent crude, EUR/USD, JPY/USD) "
                 f"finds {len(sig)} statistically significant macro factor premium(s) with Shanken "
@@ -1514,47 +1519,56 @@ def _finding_from_hit(hit: DetectorHit, today: date) -> Finding:
                 f"({max_prem * 12 * 100:+.0f}bp/year), Shanken t = {max_t_s:+.2f}. "
                 f"Factors: inflation surprise (CPI MoM demeaned), growth surprise (PAYEMS MoM demeaned), "
                 f"credit stress (Baa spread monthly change), real rate change (DFII10 monthly change)."
-            )
-        else:
-            # Regime-flip hit
-            regime_cmp = ev.get("regime_comparison", "unknown")
-            flip_factors = ev.get("flip_factors", [])
-            all_diffs = ev.get("all_diffs", {})
-            flip_detail = ev.get("flip_detail", {})
-            title = (
-                f"Cross-asset factor model: regime flip detected "
-                f"({regime_cmp.replace('_vs_', ' vs ')}, "
-                f"{len(flip_factors)} factor(s))"
-            )
-            slug = make_slug("cross_asset_factor_regime", hit.series_ids, extra=regime_cmp)
-            diff_desc = "; ".join(
-                f"{f}: diff={all_diffs[f]['diff']:+.3f}%/mo, t_diff={all_diffs[f]['t_diff']:+.2f}"
-                for f in flip_factors
-            )
-            claim = (
+            ),
+        )
+    else:
+        regime_cmp = ev.get("regime_comparison", "unknown")
+        flip_factors = ev.get("flip_factors", [])
+        all_diffs = ev.get("all_diffs", {})
+        diff_desc = "; ".join(
+            f"{f}: diff={all_diffs[f]['diff']:+.3f}%/mo, t_diff={all_diffs[f]['t_diff']:+.2f}"
+            for f in flip_factors
+        )
+        return _make_finding(hit, today,
+            slug=make_slug("cross_asset_factor_regime", hit.series_ids, extra=regime_cmp),
+            title=f"Cross-asset factor model: regime flip detected ({regime_cmp.replace('_vs_', ' vs ')}, {len(flip_factors)} factor(s))",
+            claim=(
                 f"Fama-MacBeth factor premia differ significantly across {regime_cmp.replace('_vs_', ' vs ')} "
                 f"sub-samples (|t_diff| ≥ 2.0, using Shanken SEs): {diff_desc}. "
-                f"Detail: {flip_detail}. "
+                f"Detail: {ev.get('flip_detail', {})}. "
                 f"Motivated by Bianchi-Faccini-Melosi (2023) and Koijen-Lustig-Van Nieuwerburgh (2017)."
-            )
-    else:
-        title = f"Unknown hit kind: {hit.kind}"
-        slug = make_slug(hit.kind, hit.series_ids)
-        claim = f"Evidence: {ev}"
+            ),
+        )
 
-    return Finding(
-        slug=slug,
-        title=title,
-        kind=hit.kind,
-        discovered=today,
-        series_ids=hit.series_ids,
-        window=hit.window,
-        claim=claim,
-        evidence=ev,
-        interpretation="",
-        sources=[],
-        status="new",
-        score=hit.score,
+
+_FINDING_FACTORIES: dict[str, Any] = {
+    "notable_move_level":       _ffh_notable_move_level,
+    "notable_move_change":      _ffh_notable_move_change,
+    "correlation_shift":        _ffh_correlation_shift,
+    "lead_lag_change":          _ffh_lead_lag_change,
+    "regime_transition":        _ffh_regime_transition,
+    "structural_break":         _ffh_structural_break,
+    "cointegration_break":      _ffh_cointegration_break,
+    "inflation_episode_anomaly":_ffh_inflation_episode_anomaly,
+    "breakeven_anomaly":        _ffh_breakeven_anomaly,
+    "cp_factor_signal":         _ffh_cp_factor_signal,
+    "spread_extreme":           _ffh_spread_extreme,
+    "decomposition_shift":      _ffh_decomposition_shift,
+    "btp_bund_regime":          _ffh_btp_bund_regime,
+    "ns_factor_extreme":        _ffh_ns_factor_extreme,
+    "cross_asset_factor":       _ffh_cross_asset_factor,
+}
+
+
+def _finding_from_hit(hit: DetectorHit, today: date) -> Finding:
+    """Dispatch to the appropriate per-kind factory."""
+    factory = _FINDING_FACTORIES.get(hit.kind)
+    if factory:
+        return factory(hit, today)
+    return _make_finding(hit, today,
+        slug=make_slug(hit.kind, hit.series_ids),
+        title=f"Unknown hit kind: {hit.kind}",
+        claim=f"Evidence: {hit.evidence}",
     )
 
 

@@ -29,7 +29,7 @@ topic_seeds.jsonl + findings.md + data/ + knowledge/concepts.md
 
 **Topic-seed composition**: nightly scan writes lightweight `TopicSeed` objects (raw stats, no prose) to `state/topic_seeds.jsonl`. Morning send picks the best seed and Claude decides the organizing idea and hook at compose time using fresh parquet data — separating detection (nightly) from interpretation (morning).
 
-**Composition**: one organizing idea per email, 400–600 words. All numbers queried from parquet — the LLM writes prose around data, not the other way around. Separate fact-check pass before send. BM25 concept retrieval from `knowledge/concepts.md` for institutional context.
+**Composition**: one organizing idea per email, 400–600 words. All numbers queried from parquet — the LLM writes prose around data, not the other way around. Three-pass pipeline before send: (1) fast fact-check for number accuracy and style, (2) agentic web-search citation pass that identifies mechanistic claims, finds primary academic sources, and adds inline `[N]` superscripts with a References section, (3) revision incorporating citations. BM25 concept retrieval from `knowledge/concepts.md` for institutional context.
 
 **Analytics toolkit** (`src/analytics/`): `data.py`, `stats.py`, `charts.py`, `episodes.py`, `fomc.py`, `bonds.py`, `recession.py`, `indicators.py`, `ecb.py`, `format.py`. Shared across research, composition, and ad-hoc analysis.
 
@@ -39,13 +39,13 @@ topic_seeds.jsonl + findings.md + data/ + knowledge/concepts.md
 - **ECB SDW**: 12 series — DFR, €STR, EA HICP (total + core), AAA yield curve (2Y/10Y), Germany 10Y, Italy 10Y (BTP), EA M3, negotiated wages. Two derived: BTP-Bund spread, Bund slope.
 - **Fed releases tracked**: H.4.1, H.6, H.8, H.15, Employment Situation, CPI, PCE, GDP, Industrial Production, Retail Sales. ECB Governing Council meetings and Eurostat HICP flash dates also in release calendar.
 - **Knowledge sources**: FEDS Notes, Liberty Street Economics, SF Fed Economic Letter, BLS Handbook of Methods, BEA NIPA Methods, BIS Quarterly Review, NBER, FOMC minutes, Jackson Hole proceedings. See `knowledge/sources.md`.
-- **Paper library**: 113 curated papers across inflation, yield curve, credit/FI, FOMC event studies, nowcasting, risk appetite, FX, commodities, macro×equity, SOFR plumbing, European macro/ECB, systematic fixed income.
+- **Paper library**: 132 curated papers across inflation, yield curve, credit/FI, FOMC event studies, nowcasting, risk appetite, FX, commodities, macro×equity, SOFR plumbing, European macro/ECB, systematic fixed income, cross-asset factor pricing (Groups A–N).
 
 ## Cron schedule (EC2, UTC)
 
 | Time | Job |
 |------|-----|
-| 05:45 weekdays | `send_daily.py` |
+| 05:45 daily | `send_daily.py` |
 | 06:00 daily | `refresh_data.py --ecb` |
 | 14:30 weekdays | `refresh_data.py --discover` |
 | 22:00 daily | `run_research.py` |

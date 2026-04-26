@@ -16,6 +16,7 @@ import json
 import logging
 import os
 import re
+import time
 from dataclasses import dataclass, field
 from datetime import date
 from pathlib import Path
@@ -116,8 +117,7 @@ def _fmt_raw_chg(chg: float, kind: str) -> str:
     elif kind == "plain_2":
         return f"{sign}{chg:.2f}"
     elif kind == "fx_4":
-        # Cap FX changes at 3dp to keep columns narrow
-        return f"{sign}{abs(chg):.3f}" if chg < 0 else f"+{chg:.3f}"
+        return f"{chg:+.3f}"
     elif kind == "dollar_0":
         return (f"-${abs(chg):,.0f}" if chg < 0 else f"+${chg:,.0f}")
     elif kind == "dollar_1":
@@ -831,13 +831,19 @@ def _load_concept_context(series_ids: list[str], keywords: list[str] | None = No
     try:
         from src.knowledge.retriever import retrieve_context
     except ImportError:
+        logger.warning("knowledge.retriever not available — emails will have no concept context")
         return ""
-    chunks = retrieve_context(
-        series_ids=series_ids,
-        keywords=keywords or [],
-        top_n=4,
-    )
+    try:
+        chunks = retrieve_context(
+            series_ids=series_ids,
+            keywords=keywords or [],
+            top_n=4,
+        )
+    except Exception as exc:
+        logger.warning("Concept context retrieval failed: %s", exc)
+        return ""
     if not chunks:
+        logger.warning("No concept context found for series %s — email lacks institutional background", series_ids)
         return ""
     return "\n\n".join(c.text for c in chunks)
 
@@ -978,7 +984,13 @@ def citation_check_draft(draft: dict, pick: LessonPick) -> dict:
 
     messages: list[dict] = [{"role": "user", "content": user_content}]
 
+    _CITATION_TIMEOUT_S = 90
+    _start = time.monotonic()
+
     for _ in range(10):
+        if time.monotonic() - _start > _CITATION_TIMEOUT_S:
+            logger.warning("Citation check timed out after %ds — skipping citations", _CITATION_TIMEOUT_S)
+            break
         response = client.messages.create(
             model=MODEL,
             max_tokens=2048,
@@ -1109,60 +1121,29 @@ _CHART_KINDS = {"correlation_shift", "regime_transition", "notable_move_level",
                 "spread_extreme", "decomposition_shift", "cross_asset_factor"}
 
 
-def generate_charts(pick: LessonPick, ctx: dict[str, SeriesSnapshot], today: date) -> list[Path]:
-    """Generate up to 3 charts for the finding.
-
-    Chart 1 — primary time series with NBER shading and trigger-date marker.
-    Chart 2 — rolling percentile rank over time (regime/notable-move) or
-               rolling correlation (correlation/lead-lag findings).
-    Chart 3 — distribution histogram (regime/notable-move) or
-               cross-correlogram / multi-series (correlation/lead-lag).
-
-    Returns list of saved PNG paths in order (may be shorter than 3).
-    """
-    from src.analytics.charts import (
-        time_series, time_series_zoom, distribution, rolling_percentile,
-        lead_lag_bar, save_to, add_source_footer, _ZOOM_MIN_SPAN_YEARS,
-    )
-    from src.analytics.data import load_aligned
-    from src.analytics.stats import rolling_corr, lead_lag_xcorr
+def _chart1_primary_series(
+    finding: "Finding", chart_dir: Path, slug_short: str, today: date
+) -> "Path | None":
+    """Full time-series of the primary series with NBER shading and trigger marker."""
+    import matplotlib.dates as mdates
     import matplotlib.pyplot as plt
-
-    finding = pick.finding
-    if finding.kind not in _CHART_KINDS or not finding.series_ids:
-        return []
-
-    chart_dir = CHARTS_DIR / today.isoformat()
-    chart_dir.mkdir(parents=True, exist_ok=True)
-    slug_short = finding.slug[:40].replace("/", "-")
-    paths: list[Path] = []
-
+    from src.analytics.charts import (
+        time_series, time_series_zoom, save_to, add_source_footer, _span_years, _ZOOM_MIN_SPAN_YEARS,
+    )
     sid1 = list(finding.series_ids)[0]
-
-    # ── Chart 1: full time-series of primary series ──────────────────────────
     try:
         s = load_series(sid1)
         meta = series_metadata(sid1)
-        series_title = meta.get("title", sid1)
-        import matplotlib.dates as mdates
-        from src.analytics.charts import _span_years
-
         span = _span_years(s.dropna().index) if len(s.dropna()) > 1 else 0
         if span >= _ZOOM_MIN_SPAN_YEARS:
-            fig, (ax, _ax_zoom) = time_series_zoom(
-                s,
-                title=series_title,
-                ylabel=str(meta.get("units", "")),
-                shade_nber=True,
-                zoom_years=5,
+            fig, (ax, _) = time_series_zoom(
+                s, title=meta.get("title", sid1), ylabel=str(meta.get("units", "")),
+                shade_nber=True, zoom_years=5,
             )
         else:
             fig, ax = time_series(
-                s,
-                title=series_title,
-                ylabel=str(meta.get("units", "")),
-                shade_nber=True,
-                annotate_last=True,
+                s, title=meta.get("title", sid1), ylabel=str(meta.get("units", "")),
+                shade_nber=True, annotate_last=True,
             )
         if finding.discovered:
             trigger_num = mdates.date2num(finding.discovered)
@@ -1173,277 +1154,291 @@ def generate_charts(pick: LessonPick, ctx: dict[str, SeriesSnapshot], today: dat
         out = chart_dir / f"{today.isoformat()}_{slug_short}_chart1.png"
         save_to(fig, out)
         plt.close(fig)
-        paths.append(out)
         logger.info("Chart 1 saved: %s", out)
+        return out
     except Exception as e:
         logger.warning("Chart 1 (time series) failed: %s", e)
+        return None
 
-    # ── Chart 2 ───────────────────────────────────────────────────────────────
+
+def _chart2_rolling_corr(
+    finding: "Finding", chart_dir: Path, slug_short: str, today: date
+) -> "Path | None":
+    """Rolling Spearman correlation between two series over time."""
+    import matplotlib.pyplot as plt
+    from src.analytics.charts import time_series, save_to, add_source_footer
+    from src.analytics.data import load_aligned
+    from src.analytics.stats import rolling_corr
+    sids = list(finding.series_ids[:2])
+    try:
+        df = load_aligned(sids)
+        freq = series_metadata(sids[0]).get("frequency_short", "M")
+        window = {"D": 126, "W": 52, "M": 48, "Q": 12, "A": 5}.get(freq, 48)
+        total_obs = len(df.dropna())
+        if total_obs < window * 4:
+            raise ValueError(f"Too few observations ({total_obs}) for window {window}")
+        corr = rolling_corr(df.iloc[:, 0], df.iloc[:, 1], window=window).dropna() * 100
+        if corr.empty:
+            raise ValueError("Rolling correlation is empty after dropna")
+        m0 = series_metadata(sids[0]).get("title", sids[0])
+        m1 = series_metadata(sids[1]).get("title", sids[1])
+        fig, ax = time_series(
+            corr,
+            title=f"Rolling {window}-Obs Spearman Correlation",
+            subtitle=f"{m0} vs {m1}",
+            ylabel="Spearman rank correlation (×100)",
+            shade_nber=True, annotate_last=True,
+        )
+        ax.axhline(0, color="#6B7280", linewidth=0.8, linestyle="--")
+        add_source_footer(fig, sids, today)
+        out = chart_dir / f"{today.isoformat()}_{slug_short}_chart2.png"
+        save_to(fig, out)
+        plt.close(fig)
+        logger.info("Chart 2 (rolling corr) saved: %s", out)
+        return out
+    except Exception as e:
+        logger.warning("Chart 2 (rolling corr) skipped: %s", e)
+        return None
+
+
+def _chart2_rolling_percentile(
+    finding: "Finding", chart_dir: Path, slug_short: str, today: date
+) -> "Path | None":
+    """Rolling percentile rank of the primary series over time."""
+    import matplotlib.pyplot as plt
+    from src.analytics.charts import rolling_percentile, save_to, add_source_footer
+    sid1 = list(finding.series_ids)[0]
+    try:
+        s = load_series(sid1)
+        meta = series_metadata(sid1)
+        freq = meta.get("frequency_short", "D")
+        obs_per_year = {"D": 252, "W": 52, "M": 12, "Q": 4, "A": 1}.get(freq, 252)
+        window = obs_per_year * 2
+        fig, _ = rolling_percentile(
+            s,
+            window=window,
+            title=f"{meta.get('title', sid1)} — Rolling Percentile Rank",
+            subtitle="2-year rolling window; bands at 33rd and 67th %ile",
+            shade_nber=True,
+        )
+        add_source_footer(fig, [sid1], today)
+        out = chart_dir / f"{today.isoformat()}_{slug_short}_chart2.png"
+        save_to(fig, out)
+        plt.close(fig)
+        logger.info("Chart 2 (rolling percentile) saved: %s", out)
+        return out
+    except Exception as e:
+        logger.warning("Chart 2 (rolling percentile) skipped: %s", e)
+        return None
+
+
+def _chart3_split_correlogram(
+    finding: "Finding", chart_dir: Path, slug_short: str, today: date
+) -> "Path | None":
+    """Side-by-side cross-correlogram: historical vs. recent."""
+    import matplotlib.pyplot as plt
+    from src.analytics.charts import lead_lag_bar_split, save_to, add_source_footer
+    from src.analytics.data import load_aligned
+    from src.analytics.stats import lead_lag_xcorr
+    sids = list(finding.series_ids[:2])
+    try:
+        df = load_aligned(sids)
+        ev = finding.evidence or {}
+        n_hist = int(ev.get("n_hist", max(len(df) - 24, 10)))
+        n_recent = int(ev.get("n_recent", min(24, len(df) - n_hist)))
+        max_lag = 12
+        if n_recent < max_lag + 3 or n_hist < max_lag * 2:
+            raise ValueError(f"Insufficient obs for split correlogram: n_hist={n_hist}, n_recent={n_recent}")
+        xcorr_hist = lead_lag_xcorr(df.iloc[:n_hist, 0], df.iloc[:n_hist, 1], max_lag=max_lag)
+        xcorr_recent = lead_lag_xcorr(df.iloc[n_hist:, 0], df.iloc[n_hist:, 1], max_lag=max_lag)
+        fig, _ = lead_lag_bar_split(
+            xcorr_hist, xcorr_recent,
+            title=f"Cross-Correlogram: {sids[0]} vs {sids[1]}",
+            subtitle="How the lead-lag structure has changed",
+            hist_label=f"Historical (n={n_hist})",
+            recent_label=f"Recent (n={n_recent})",
+        )
+        add_source_footer(fig, sids, today)
+        out = chart_dir / f"{today.isoformat()}_{slug_short}_chart3.png"
+        save_to(fig, out)
+        plt.close(fig)
+        logger.info("Chart 3 (split correlogram) saved: %s", out)
+        return out
+    except Exception as e:
+        logger.warning("Chart 3 (split correlogram) skipped: %s", e)
+        return None
+
+
+def _chart3_distribution(
+    finding: "Finding", ctx: "dict[str, SeriesSnapshot]", chart_dir: Path, slug_short: str, today: date
+) -> "Path | None":
+    """Full-history distribution histogram with current value marked."""
+    import matplotlib.pyplot as plt
+    from src.analytics.charts import distribution, save_to, add_source_footer
+    sid1 = list(finding.series_ids)[0]
+    if sid1 not in ctx:
+        return None
+    snap = ctx[sid1]
+    if snap.current_value is None:
+        return None
+    try:
+        s = load_series(sid1)
+        meta = series_metadata(sid1)
+        pct_label = f"{snap.percentile_rank * 100:.0f}th %ile" if snap.percentile_rank is not None else ""
+        fig, _ = distribution(
+            s,
+            current_value=snap.current_value,
+            title=f"{meta.get('title', sid1)} — Full History Distribution",
+            subtitle=f"Current: {snap.current_value:.2f}{' — ' + pct_label if pct_label else ''}",
+            xlabel=str(meta.get("units", "")),
+        )
+        add_source_footer(fig, [sid1], today)
+        out = chart_dir / f"{today.isoformat()}_{slug_short}_chart3.png"
+        save_to(fig, out)
+        plt.close(fig)
+        logger.info("Chart 3 (distribution) saved: %s", out)
+        return out
+    except Exception as e:
+        logger.warning("Chart 3 (distribution) failed: %s", e)
+        return None
+
+
+def _chart1_multi_series_harvested(
+    finding: "Finding", chart_dir: Path, slug_short: str, today: date
+) -> "Path | None":
+    """Multi-series chart for harvested_source findings (replaces single-series chart 1)."""
+    import matplotlib.pyplot as plt
+    from src.analytics.charts import multi_series, multi_series_zoom, save_to, add_source_footer, _span_years, _ZOOM_MIN_SPAN_YEARS
+    from src.analytics.data import load_aligned
+    sids_all = list(finding.series_ids)
+    try:
+        df_multi = load_aligned(sids_all).dropna(how="all")
+        if df_multi.empty or len(df_multi.columns) < 2:
+            raise ValueError("Insufficient aligned data for multi-series chart")
+        units_set = {series_metadata(sid).get("units", "") for sid in df_multi.columns}
+        normalize = "none" if len(units_set) == 1 else "zscore"
+        legend_labels = [series_metadata(sid).get("title", sid) for sid in df_multi.columns]
+        primary_title = series_metadata(sids_all[0]).get("title", sids_all[0])
+        units_label = list(units_set)[0] if len(units_set) == 1 else "z-score"
+        span = _span_years(df_multi.dropna(how="all").index)
+        if span >= _ZOOM_MIN_SPAN_YEARS:
+            fig, _ = multi_series_zoom(
+                df_multi, title=f"{primary_title} and Related Series", ylabel=units_label,
+                normalize=normalize, legend_labels=legend_labels, shade_nber=True,
+            )
+        else:
+            fig, _ = multi_series(
+                df_multi, title=f"{primary_title} and Related Series", ylabel=units_label,
+                normalize=normalize, legend_labels=legend_labels, shade_nber=True,
+            )
+        add_source_footer(fig, list(df_multi.columns), today)
+        out = chart_dir / f"{today.isoformat()}_{slug_short}_chart1m.png"
+        save_to(fig, out)
+        plt.close(fig)
+        logger.info("Chart 1 (multi-series harvested) saved: %s", out)
+        return out
+    except Exception as e:
+        logger.warning("Chart 1 multi-series (harvested) skipped: %s", e)
+        return None
+
+
+def _chart2_fomc_era_comparison(
+    finding: "Finding", chart_dir: Path, slug_short: str, today: date
+) -> "Path | None":
+    """Era comparison bar chart for fomc_event_study findings."""
+    import matplotlib.pyplot as plt
+    from src.analytics.charts import era_comparison_bar, save_to, add_source_footer
+    ev = finding.evidence or {}
+    eras = ev.get("eras") if isinstance(ev, dict) else None
+    if not eras or len(eras) < 2:
+        return None
+    try:
+        first = eras[0]
+        if "path_share" in first:
+            for e in eras:
+                e["timing_share"] = 1.0 - float(e["path_share"])
+            fig, _ = era_comparison_bar(
+                eras, metric_a="timing_share", metric_b="path_share",
+                label_a="Timing surprise share", label_b="Path surprise share",
+                title="FOMC Announcement: Path vs Timing Surprise Share by Era",
+                subtitle="Share of total 2-year yield move attributable to each component",
+                ylabel="Share of total move (%)", stacked=True, pct_scale=True,
+            )
+        elif "beta_path" in first:
+            fig, _ = era_comparison_bar(
+                eras, metric_a="beta_timing", metric_b="beta_path",
+                label_a="β timing", label_b="β path",
+                title="FOMC Day: 10-Year Yield Sensitivity to Surprise Components by Era",
+                subtitle="OLS coefficients — 10y change on timing and path surprises",
+                ylabel="OLS coefficient", stacked=False, pct_scale=False,
+            )
+        else:
+            raise ValueError("No known metric found in era evidence")
+        add_source_footer(fig, list(finding.series_ids), today)
+        out = chart_dir / f"{today.isoformat()}_{slug_short}_chart2.png"
+        save_to(fig, out)
+        plt.close(fig)
+        logger.info("Chart 2 (era comparison fomc) saved: %s", out)
+        return out
+    except Exception as e:
+        logger.warning("Chart 2 (era comparison fomc) skipped: %s", e)
+        return None
+
+
+def generate_charts(pick: LessonPick, ctx: dict[str, SeriesSnapshot], today: date) -> list[Path]:
+    """Generate up to 3 charts for the finding. Returns list of saved PNG paths."""
+    finding = pick.finding
+    if finding.kind not in _CHART_KINDS or not finding.series_ids:
+        return []
+
+    chart_dir = CHARTS_DIR / today.isoformat()
+    chart_dir.mkdir(parents=True, exist_ok=True)
+    slug_short = finding.slug[:40].replace("/", "-")
+    sid1 = list(finding.series_ids)[0]
+    paths: list[Path] = []
+
+    # Chart 1: always primary time-series
+    p = _chart1_primary_series(finding, chart_dir, slug_short, today)
+    if p:
+        paths.append(p)
+
+    # Chart 2: kind-specific
     if finding.kind in {"correlation_shift", "lead_lag_change"} and len(finding.series_ids) >= 2:
-        # Rolling correlation over time — use a frequency-appropriate window, not n_hist
-        sids = list(finding.series_ids[:2])
-        try:
-            df = load_aligned(sids)
-            freq = series_metadata(sids[0]).get("frequency_short", "M")
-            default_windows = {"D": 126, "W": 52, "M": 48, "Q": 12, "A": 5}
-            window = default_windows.get(freq, 48)
-            total_obs = len(df.dropna())
-            # Quality gate: need at least 4 full rolling windows visible to be readable
-            if total_obs < window * 4:
-                raise ValueError(f"Too few observations ({total_obs}) for window {window} — skipping chart 2")
-            corr = rolling_corr(df.iloc[:, 0], df.iloc[:, 1], window=window)
-            corr = corr.dropna() * 100
-            if not corr.empty:
-                m0 = series_metadata(sids[0]).get("title", sids[0])
-                m1 = series_metadata(sids[1]).get("title", sids[1])
-                fig2, ax2 = time_series(
-                    corr,
-                    title=f"Rolling {window}-Obs Spearman Correlation",
-                    subtitle=f"{m0} vs {m1}",
-                    ylabel="Spearman rank correlation (×100)",
-                    shade_nber=True,
-                    annotate_last=True,
-                )
-                ax2.axhline(0, color="#6B7280", linewidth=0.8, linestyle="--")
-                add_source_footer(fig2, sids, today)
-                out2 = chart_dir / f"{today.isoformat()}_{slug_short}_chart2.png"
-                save_to(fig2, out2)
-                plt.close(fig2)
-                paths.append(out2)
-                logger.info("Chart 2 (rolling corr) saved: %s", out2)
-        except Exception as e:
-            logger.warning("Chart 2 (rolling corr) skipped: %s", e)
-
+        p = _chart2_rolling_corr(finding, chart_dir, slug_short, today)
+        if p: paths.append(p)
     elif finding.kind in {"notable_move_level", "notable_move_change", "regime_transition"}:
-        # Rolling percentile rank over time — more informative than static histogram
-        try:
-            s = load_series(sid1)
-            meta = series_metadata(sid1)
-            # Use ~2y window for daily series, ~5y for monthly
-            freq = meta.get("frequency_short", "D")
-            obs_per_year = {"D": 252, "W": 52, "M": 12, "Q": 4, "A": 1}.get(freq, 252)
-            window = obs_per_year * 2
-            fig2, _ = rolling_percentile(
-                s,
-                window=window,
-                title=f"{meta.get('title', sid1)} — Rolling Percentile Rank",
-                subtitle=f"2-year rolling window; bands at 33rd and 67th %ile",
-                shade_nber=True,
-            )
-            add_source_footer(fig2, [sid1], today)
-            out2 = chart_dir / f"{today.isoformat()}_{slug_short}_chart2.png"
-            save_to(fig2, out2)
-            plt.close(fig2)
-            paths.append(out2)
-            logger.info("Chart 2 (rolling percentile) saved: %s", out2)
-        except Exception as e:
-            logger.warning("Chart 2 (rolling percentile) failed: %s", e)
+        p = _chart2_rolling_percentile(finding, chart_dir, slug_short, today)
+        if p: paths.append(p)
 
-    # ── Chart 3 ───────────────────────────────────────────────────────────────
+    # Chart 3: kind-specific
     if finding.kind == "lead_lag_change" and len(finding.series_ids) >= 2:
-        # Split cross-correlogram: historical vs. recent periods side by side
-        sids = list(finding.series_ids[:2])
-        try:
-            from src.analytics.charts import lead_lag_bar_split
-            df = load_aligned(sids)
-            ev = finding.evidence or {}
-            n_hist = int(ev.get("n_hist", max(len(df) - 24, 10)))
-            n_recent = int(ev.get("n_recent", min(24, len(df) - n_hist)))
-            max_lag = 12
-            # Quality gate: both periods need enough obs to compute 12-lag correlogram reliably
-            if n_recent < max_lag + 3 or n_hist < max_lag * 2:
-                raise ValueError(
-                    f"Insufficient obs for split correlogram: n_hist={n_hist}, n_recent={n_recent}"
-                )
-            hist_df = df.iloc[:n_hist]
-            recent_df = df.iloc[n_hist:]
-            xcorr_hist = lead_lag_xcorr(hist_df.iloc[:, 0], hist_df.iloc[:, 1], max_lag=max_lag)
-            xcorr_recent = lead_lag_xcorr(recent_df.iloc[:, 0], recent_df.iloc[:, 1], max_lag=max_lag)
-            fig3, _ = lead_lag_bar_split(
-                xcorr_hist,
-                xcorr_recent,
-                title=f"Cross-Correlogram: {sids[0]} vs {sids[1]}",
-                subtitle="How the lead-lag structure has changed",
-                hist_label=f"Historical (n={n_hist})",
-                recent_label=f"Recent (n={n_recent})",
-            )
-            add_source_footer(fig3, sids, today)
-            out3 = chart_dir / f"{today.isoformat()}_{slug_short}_chart3.png"
-            save_to(fig3, out3)
-            plt.close(fig3)
-            paths.append(out3)
-            logger.info("Chart 3 (split correlogram) saved: %s", out3)
-        except Exception as e:
-            logger.warning("Chart 3 (split correlogram) skipped: %s", e)
+        p = _chart3_split_correlogram(finding, chart_dir, slug_short, today)
+        if p: paths.append(p)
+    elif finding.kind in {"notable_move_level", "notable_move_change", "regime_transition", "structural_break"}:
+        p = _chart3_distribution(finding, ctx, chart_dir, slug_short, today)
+        if p: paths.append(p)
 
-    elif finding.kind in {"notable_move_level", "notable_move_change", "regime_transition",
-                          "structural_break"} and sid1 in ctx:
-        # Distribution histogram as chart 3 (percentile rank over time was chart 2)
-        snap = ctx[sid1]
-        if snap.current_value is not None:
-            try:
-                s = load_series(sid1)
-                meta = series_metadata(sid1)
-                pct_label = f"{snap.percentile_rank * 100:.0f}th %ile" if snap.percentile_rank is not None else ""
-                fig3, _ = distribution(
-                    s,
-                    current_value=snap.current_value,
-                    title=f"{meta.get('title', sid1)} — Full History Distribution",
-                    subtitle=f"Current: {snap.current_value:.2f}{' — ' + pct_label if pct_label else ''}",
-                    xlabel=str(meta.get("units", "")),
-                )
-                add_source_footer(fig3, [sid1], today)
-                out3 = chart_dir / f"{today.isoformat()}_{slug_short}_chart3.png"
-                save_to(fig3, out3)
-                plt.close(fig3)
-                paths.append(out3)
-                logger.info("Chart 3 (distribution) saved: %s", out3)
-            except Exception as e:
-                logger.warning("Chart 3 (distribution) failed: %s", e)
-
-    # ── harvested_source: replace the single-series chart 1 with a multi-series
-    #    chart if the finding references 2+ series, then add rolling percentile
-    #    and distribution as charts 2 and 3 ───────────────────────────────────
+    # harvested_source: upgrade chart 1 to multi-series, then fill chart 2 + 3
     if finding.kind == "harvested_source" and len(finding.series_ids) >= 2:
-        # Attempt a multi-series chart using all tracked series in the finding.
-        # Fall back to the already-generated single-series chart 1 if this fails.
-        sids_all = list(finding.series_ids)
-        try:
-            from src.analytics.data import load_aligned
-            from src.analytics.charts import multi_series, multi_series_zoom, _span_years
-            df_multi = load_aligned(sids_all)
-            df_multi = df_multi.dropna(how="all")
-            if df_multi.empty or len(df_multi.columns) < 2:
-                raise ValueError("Insufficient aligned data for multi-series chart")
-            # Determine whether to normalise: compare units of tracked series
-            units_set = {series_metadata(sid).get("units", "") for sid in df_multi.columns}
-            normalize = "none" if len(units_set) == 1 else "zscore"
-            legend_labels = [series_metadata(sid).get("title", sid) for sid in df_multi.columns]
-            span = _span_years(df_multi.dropna(how="all").index)
-            primary_title = series_metadata(sids_all[0]).get("title", sids_all[0])
-            multi_title = f"{primary_title} and Related Series"
-            units_label = list(units_set)[0] if len(units_set) == 1 else "z-score"
-            if span >= _ZOOM_MIN_SPAN_YEARS:
-                fig_m, _ = multi_series_zoom(
-                    df_multi, title=multi_title, ylabel=units_label,
-                    normalize=normalize, legend_labels=legend_labels, shade_nber=True,
-                )
-            else:
-                fig_m, _ = multi_series(
-                    df_multi, title=multi_title, ylabel=units_label,
-                    normalize=normalize, legend_labels=legend_labels, shade_nber=True,
-                )
-            add_source_footer(fig_m, list(df_multi.columns), today)
-            # Replace chart 1 if it was single-series; otherwise append
-            out_m = chart_dir / f"{today.isoformat()}_{slug_short}_chart1m.png"
-            save_to(fig_m, out_m)
-            plt.close(fig_m)
+        p = _chart1_multi_series_harvested(finding, chart_dir, slug_short, today)
+        if p:
             if paths:
-                paths[0] = out_m  # replace single-series chart 1
+                paths[0] = p
             else:
-                paths.append(out_m)
-            logger.info("Chart 1 (multi-series harvested) saved: %s", out_m)
-        except Exception as e:
-            logger.warning("Chart 1 multi-series (harvested) skipped: %s", e)
+                paths.append(p)
 
     if finding.kind in {"harvested_source", "structural_break"}:
-        # Chart 2: rolling percentile of primary series
         if len(paths) < 2:
-            try:
-                s = load_series(sid1)
-                meta = series_metadata(sid1)
-                freq = meta.get("frequency_short", "M")
-                obs_per_year = {"D": 252, "W": 52, "M": 12, "Q": 4, "A": 1}.get(freq, 252)
-                window = obs_per_year * 2
-                fig2h, _ = rolling_percentile(
-                    s,
-                    window=window,
-                    title=f"{meta.get('title', sid1)} — Rolling Percentile Rank",
-                    subtitle="2-year rolling window; bands at 33rd and 67th %ile",
-                    shade_nber=True,
-                )
-                add_source_footer(fig2h, [sid1], today)
-                out2h = chart_dir / f"{today.isoformat()}_{slug_short}_chart2.png"
-                save_to(fig2h, out2h)
-                plt.close(fig2h)
-                paths.append(out2h)
-                logger.info("Chart 2 (rolling percentile harvested) saved: %s", out2h)
-            except Exception as e:
-                logger.warning("Chart 2 (rolling percentile harvested) skipped: %s", e)
+            p = _chart2_rolling_percentile(finding, chart_dir, slug_short, today)
+            if p: paths.append(p)
+        if len(paths) < 3:
+            p = _chart3_distribution(finding, ctx, chart_dir, slug_short, today)
+            if p: paths.append(p)
 
-        # Chart 3: distribution of primary series
-        if len(paths) < 3 and sid1 in ctx:
-            snap = ctx[sid1]
-            if snap.current_value is not None:
-                try:
-                    s = load_series(sid1)
-                    meta = series_metadata(sid1)
-                    pct_label = f"{snap.percentile_rank * 100:.0f}th %ile" if snap.percentile_rank is not None else ""
-                    fig3h, _ = distribution(
-                        s,
-                        current_value=snap.current_value,
-                        title=f"{meta.get('title', sid1)} — Full History Distribution",
-                        subtitle=f"Current: {snap.current_value:.2f}{' — ' + pct_label if pct_label else ''}",
-                        xlabel=str(meta.get("units", "")),
-                    )
-                    add_source_footer(fig3h, [sid1], today)
-                    out3h = chart_dir / f"{today.isoformat()}_{slug_short}_chart3.png"
-                    save_to(fig3h, out3h)
-                    plt.close(fig3h)
-                    paths.append(out3h)
-                    logger.info("Chart 3 (distribution harvested) saved: %s", out3h)
-                except Exception as e:
-                    logger.warning("Chart 3 (distribution harvested) skipped: %s", e)
-
-    # ── fomc_event_study: add era comparison bar chart as chart 2 ─────────────
+    # fomc_event_study: era comparison bar as chart 2
     if finding.kind == "fomc_event_study":
-        ev = finding.evidence or {}
-        eras = ev.get("eras") if isinstance(ev, dict) else None
-        if eras and len(eras) >= 2:
-            try:
-                from src.analytics.charts import era_comparison_bar
-                # Detect which metrics to compare
-                first = eras[0]
-                if "path_share" in first:
-                    # Stacked bar: timing share vs path share per era
-                    # Compute timing_share = 1 - path_share and store temporarily
-                    for e in eras:
-                        e["timing_share"] = 1.0 - float(e["path_share"])
-                    fig_era, _ = era_comparison_bar(
-                        eras,
-                        metric_a="timing_share",
-                        metric_b="path_share",
-                        label_a="Timing surprise share",
-                        label_b="Path surprise share",
-                        title="FOMC Announcement: Path vs Timing Surprise Share by Era",
-                        subtitle="Share of total 2-year yield move attributable to each component",
-                        ylabel="Share of total move (%)",
-                        stacked=True,
-                        pct_scale=True,
-                    )
-                elif "beta_path" in first:
-                    fig_era, _ = era_comparison_bar(
-                        eras,
-                        metric_a="beta_timing",
-                        metric_b="beta_path",
-                        label_a="β timing",
-                        label_b="β path",
-                        title="FOMC Day: 10-Year Yield Sensitivity to Surprise Components by Era",
-                        subtitle="OLS coefficients — 10y change on timing and path surprises",
-                        ylabel="OLS coefficient",
-                        stacked=False,
-                        pct_scale=False,
-                    )
-                else:
-                    raise ValueError("No known metric found in era evidence")
-                add_source_footer(fig_era, list(finding.series_ids), today)
-                out_era = chart_dir / f"{today.isoformat()}_{slug_short}_chart2.png"
-                save_to(fig_era, out_era)
-                plt.close(fig_era)
-                paths.append(out_era)
-                logger.info("Chart 2 (era comparison) saved: %s", out_era)
-            except Exception as e:
-                logger.warning("Chart 2 (era comparison fomc) skipped: %s", e)
+        p = _chart2_fomc_era_comparison(finding, chart_dir, slug_short, today)
+        if p: paths.append(p)
 
     return paths
 
