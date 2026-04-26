@@ -595,7 +595,7 @@ PROSE RULES:
 FACTUAL ACCURACY RULES:
 - Use ONLY the numbers from the DATA CONTEXT provided. Do not invent or estimate numbers.
 - Every value in the email traces to a FRED series in the data context.
-- Historical claims must come from the finding's Sources list or CONCEPT CONTEXT, or be explicitly framed as "commonly argued."
+- Mechanistic and interpretive claims must be grounded in the finding's Sources list or CONCEPT CONTEXT. If a mechanism is not explicitly supported there, either omit it or soften it to "the mechanism is not established here." Do not assert causal mechanisms as fact on the basis of general knowledge alone.
 - When data is ambiguous, surface the uncertainty — do not hide it.
 
 OUTPUT FORMAT:
@@ -635,6 +635,66 @@ Return ONLY a raw JSON object — no preamble, no reasoning, no bullet lists, no
 }
 Set "approved" to false ONLY if a number in the draft does not match the DATA CONTEXT (wrong value, not a rounding difference).
 All style issues — banned phrases, series IDs in prose, spelling of "percentile", unsupported historical context, σ decimal places — are flags only and NEVER block approval.
+"""
+
+_CITATION_SYSTEM = """\
+You are a citation researcher for a macro finance education email.
+
+Given an email draft, identify all specific mechanistic, causal, or interpretive claims that
+go beyond the empirical data (i.e. claims about *why* something happens, historical analogues,
+or cross-asset transmission mechanisms). For each claim, search for a primary academic or
+institutional source that supports it.
+
+Guidelines:
+- Target at most 3 claims — pick the most specific and non-obvious ones.
+- Prefer: academic papers (NBER, SSRN), FEDS Notes, Liberty Street Economics, BIS papers.
+- Fetch the most promising URL to verify the source actually supports the claim.
+- Only return a citation if the source genuinely addresses the mechanism claimed.
+- Do not force a citation onto a vague or general claim where no tight source exists.
+- If a claim cannot be sourced, include it in "unsourced" — do not fabricate a citation.
+
+OUTPUT FORMAT (raw JSON, no code fence):
+{
+  "citations": [
+    {
+      "claim_excerpt": "exact short phrase from the draft identifying the claim",
+      "url": "https://...",
+      "author": "Surname et al." or "Institution",
+      "year": "YYYY",
+      "title": "Title of paper or note",
+      "relevance": "One sentence: what this source says that supports the claim."
+    }
+  ],
+  "unsourced": ["claim excerpt that could not be sourced"]
+}
+If no claims need sourcing: { "citations": [], "unsourced": [] }
+"""
+
+_REVISION_SYSTEM = """\
+You are editing a macro finance email to add inline citations.
+
+You will receive:
+1. The current body_html of the email (may contain {{CHART_1}}, {{CHART_2}}, {{CHART_3}},
+   {{EQUATION}} placeholders — preserve these exactly).
+2. A list of citations, each with: claim_excerpt, url, author, year, title.
+
+Your task:
+- For each citation, find the sentence in body_html containing the claim_excerpt.
+  Wrap the claim_excerpt text in an anchor tag: <a href="URL" style="color:#1a1a1a;">[N]</a>
+  where N is the citation number (1, 2, 3, ...). Place the anchor immediately after the
+  claim_excerpt phrase (not wrapping it — insert the superscript after).
+  Use: claim_excerpt<a href="URL" style="color:#555; font-size:0.8em; vertical-align:super;">[N]</a>
+- Append a References section at the very end of body_html (before any closing tags):
+  <h3>References</h3><ol style="font-family:Helvetica,Arial,sans-serif; font-size:13px; color:#444; line-height:1.6;">
+  <li><a href="URL">Author (Year), "Title."</a></li>
+  ...
+  </ol>
+- Also append a plain-text references section to body_text.
+- Do NOT change any other prose. Do NOT alter numbers, sentences, or structure.
+- Preserve all {{CHART_N}} and {{EQUATION}} placeholders exactly as-is.
+
+OUTPUT FORMAT (raw JSON, no code fence):
+{"body_html": "...", "body_text": "..."}
 """
 
 
@@ -843,6 +903,156 @@ def fact_check_draft(draft: dict, pick: LessonPick, ctx: dict[str, SeriesSnapsho
     except (ValueError, json.JSONDecodeError) as e:
         logger.warning("Fact-check parse error: %s", e)
         return {"flags": ["Fact-check response could not be parsed"], "approved": True}
+
+
+# ---------- citation check (web-search pass) ----------
+
+def _web_search(query: str, max_results: int = 5) -> str:
+    from ddgs import DDGS
+    results = []
+    try:
+        with DDGS() as ddgs:
+            for r in ddgs.text(query, max_results=max_results):
+                results.append(
+                    f"Title: {r.get('title', '')}\nURL: {r.get('href', '')}\nSnippet: {r.get('body', '')}\n"
+                )
+    except Exception as exc:
+        return f"Search failed: {exc}"
+    return "\n---\n".join(results) if results else "No results found."
+
+
+def _web_fetch(url: str, max_chars: int = 6000) -> str:
+    import requests
+    from bs4 import BeautifulSoup
+    try:
+        resp = requests.get(url, timeout=15, headers={"User-Agent": "Mozilla/5.0 (research bot)"})
+        resp.raise_for_status()
+        soup = BeautifulSoup(resp.text, "lxml")
+        for tag in soup(["script", "style", "nav", "footer", "header"]):
+            tag.decompose()
+        lines = [ln for ln in soup.get_text(separator="\n", strip=True).splitlines() if ln.strip()]
+        return "\n".join(lines)[:max_chars]
+    except Exception as exc:
+        return f"Fetch failed: {exc}"
+
+
+def citation_check_draft(draft: dict, pick: LessonPick) -> dict:
+    """Agentic web-search pass: find primary sources for mechanistic claims.
+
+    Returns {"citations": [...], "unsourced": [...]}.
+    """
+    client = _client()
+    finding = pick.finding
+
+    user_content = (
+        f"EMAIL DRAFT (body text — identify mechanistic/interpretive claims to source):\n"
+        f"{draft.get('body_text', '')}\n\n"
+        f"FINDING RECORD (already-sourced claims are in finding.sources — do not re-source these):\n"
+        f"{json.dumps(_finding_to_dict(finding), indent=2)}\n\n"
+        "Identify up to 3 specific mechanistic or interpretive claims in the draft that lack "
+        "primary source support. Search for academic papers or institutional research notes "
+        "that support each claim. Fetch the most promising URL to verify relevance. "
+        "Return JSON."
+    )
+
+    tools = [
+        {
+            "name": "web_search",
+            "description": "Search the web for academic or institutional sources.",
+            "input_schema": {
+                "type": "object",
+                "properties": {"query": {"type": "string"}},
+                "required": ["query"],
+            },
+        },
+        {
+            "name": "web_fetch",
+            "description": "Fetch and read a web page to verify source relevance.",
+            "input_schema": {
+                "type": "object",
+                "properties": {"url": {"type": "string"}},
+                "required": ["url"],
+            },
+        },
+    ]
+
+    messages: list[dict] = [{"role": "user", "content": user_content}]
+
+    for _ in range(10):
+        response = client.messages.create(
+            model=MODEL,
+            max_tokens=2048,
+            system=[{"type": "text", "text": _CITATION_SYSTEM, "cache_control": {"type": "ephemeral"}}],
+            tools=tools,
+            messages=messages,
+        )
+
+        if response.stop_reason == "end_turn":
+            for block in response.content:
+                if block.type == "text":
+                    try:
+                        result = _extract_json(block.text)
+                        n = len(result.get("citations", []))
+                        logger.info("Citation check: %d citations found, %d unsourced",
+                                    n, len(result.get("unsourced", [])))
+                        return result
+                    except (ValueError, json.JSONDecodeError) as e:
+                        logger.warning("Citation check parse error: %s", e)
+            break
+
+        if response.stop_reason != "tool_use":
+            break
+
+        tool_results = []
+        for block in response.content:
+            if block.type == "tool_use":
+                try:
+                    if block.name == "web_search":
+                        content = _web_search(block.input.get("query", ""))
+                    elif block.name == "web_fetch":
+                        content = _web_fetch(block.input.get("url", ""))
+                    else:
+                        content = f"Unknown tool: {block.name}"
+                except Exception as exc:
+                    content = f"Tool error: {exc}"
+                tool_results.append({
+                    "type": "tool_result",
+                    "tool_use_id": block.id,
+                    "content": content,
+                })
+
+        messages.append({"role": "assistant", "content": response.content})
+        messages.append({"role": "user", "content": tool_results})
+
+    return {"citations": [], "unsourced": []}
+
+
+def revise_with_citations(draft: dict, citation_result: dict) -> dict:
+    """Insert inline citation superscripts and append a References section."""
+    citations = citation_result.get("citations", [])
+    if not citations:
+        return draft
+
+    client = _client()
+    user_content = (
+        f"BODY HTML:\n{draft['body_html']}\n\n"
+        f"BODY TEXT:\n{draft.get('body_text', '')}\n\n"
+        f"CITATIONS:\n{json.dumps(citations, indent=2)}\n\n"
+        "Add inline citation markers and append the References section. Return JSON."
+    )
+
+    response = client.messages.create(
+        model=MODEL,
+        max_tokens=4096,
+        system=[{"type": "text", "text": _REVISION_SYSTEM, "cache_control": {"type": "ephemeral"}}],
+        messages=[{"role": "user", "content": user_content}],
+    )
+    try:
+        revised = _extract_json(response.content[0].text)
+        return {**draft, **revised}
+    except (ValueError, json.JSONDecodeError) as e:
+        logger.warning("Citation revision parse error: %s — returning un-cited draft", e)
+        return draft
 
 
 # ---------- equation generation ----------
@@ -1360,6 +1570,7 @@ class ComposedEmail:
     fact_check_flags: list[str]
     approved: bool
     data_context: dict
+    citation_count: int = 0
 
 
 # ---------- main entry point ----------
@@ -1384,6 +1595,13 @@ def compose_email(pick: LessonPick, today: date | None = None) -> ComposedEmail:
     if flags:
         logger.info("Fact-check flags (%d): %s", len(flags), "; ".join(flags))
 
+    # Web-search citation pass: find primary sources for mechanistic claims
+    citation_result = citation_check_draft(draft, pick)
+    citation_count = len(citation_result.get("citations", []))
+    if citation_count:
+        draft = revise_with_citations(draft, citation_result)
+        logger.info("Citations added: %d", citation_count)
+
     chart_paths = generate_charts(pick, ctx, today)
     chart_dir = CHARTS_DIR / today.isoformat()
     chart_dir.mkdir(parents=True, exist_ok=True)
@@ -1406,6 +1624,7 @@ def compose_email(pick: LessonPick, today: date | None = None) -> ComposedEmail:
         equation_path=equation_path,
         fact_check_flags=flags,
         approved=approved,
+        citation_count=citation_count,
         data_context=_ctx_to_dict(ctx),
     )
 

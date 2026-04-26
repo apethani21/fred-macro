@@ -134,9 +134,11 @@ def main() -> int:
 
         approved = composed.approved
         flags = len(composed.fact_check_flags)
-        logger.info("Draft ready. Approved: %s. Flags: %d", approved, flags)
+        citations = composed.citation_count
+        logger.info("Draft ready. Approved: %s. Flags: %d. Citations: %d", approved, flags, citations)
         run.set("approved", approved)
         run.set("fact_check_flags", flags)
+        run.set("citation_count", citations)
 
         if not approved:
             logger.error("Draft failed fact-check (approved=False). Flags:")
