@@ -302,6 +302,12 @@ _RELEASE_EQUITY: list[tuple[str, str, str]] = [
     ("eurostat flash hicp",     "EA HICP Flash",    "EA inflation print; drives ECB rate path expectations and EUR-denominated asset repricing."),
     ("eurostat hicp",           "EA HICP",          "EA inflation print; drives ECB rate path expectations and EUR-denominated asset repricing."),
     ("flash hicp",              "EA HICP Flash",    "EA inflation print; drives ECB rate path expectations and EUR-denominated asset repricing."),
+    # Other G7 + Japan central banks
+    ("bank of england mpc",     "BoE Decision",     "Rate decision + MPC vote split (9 members); GBP/USD and gilt yields are the primary movers. Super Thursday meetings (Feb/May/Aug/Nov) also publish the Monetary Policy Report."),
+    ("bank of england",         "BoE Decision",     "Rate decision + MPC vote split (9 members); GBP/USD and gilt yields are the primary movers. Super Thursday meetings (Feb/May/Aug/Nov) also publish the Monetary Policy Report."),
+    ("bank of japan mpm",       "BoJ Decision",     "Rate and YCC/QQE policy decision; JPY crosses and JGB yields are the primary movers. Hawkish surprises amplify yen carry unwinds across global risk assets."),
+    ("bank of japan",           "BoJ Decision",     "Rate and YCC/QQE policy decision; JPY crosses and JGB yields are the primary movers. Hawkish surprises amplify yen carry unwinds across global risk assets."),
+    ("bank of canada",          "BoC Decision",     "Rate decision; CAD/USD and Canadian government bonds are the primary movers. MPR meetings (Jan/Apr/Jul/Oct) add growth and inflation projections. Oil price pass-through makes BoC hawkishness more commodity-linked than peers."),
 ]
 
 
