@@ -43,5 +43,10 @@ FRED_MACRO_DIR=/home/ubuntu/fred-macro
 # Simple approach: keep at 05:45 UTC year-round (arrives ~06:45 winter, ~07:45 summer — acceptable).
 45 5 * * * cd $FRED_MACRO_DIR && python scripts/send_daily.py >> logs/send_daily.log 2>&1
 
+# --- Telegram Q&A bot: start on reboot ---
+# Runs as a persistent daemon. Restarts automatically if the EC2 instance reboots.
+# To start manually without rebooting: nohup python scripts/telegram_bot.py >> logs/telegram_bot.log 2>&1 &
+@reboot cd $FRED_MACRO_DIR && nohup python scripts/telegram_bot.py >> logs/telegram_bot.log 2>&1 &
+
 # --- Log rotation: truncate logs weekly (Sunday 00:01 UTC) ---
-1 0 * * 0 truncate -s 0 $FRED_MACRO_DIR/logs/refresh_data.log $FRED_MACRO_DIR/logs/run_research.log $FRED_MACRO_DIR/logs/send_daily.log $FRED_MACRO_DIR/logs/run_harvest.log
+1 0 * * 0 truncate -s 0 $FRED_MACRO_DIR/logs/refresh_data.log $FRED_MACRO_DIR/logs/run_research.log $FRED_MACRO_DIR/logs/send_daily.log $FRED_MACRO_DIR/logs/run_harvest.log $FRED_MACRO_DIR/logs/telegram_bot.log
