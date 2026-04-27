@@ -62,6 +62,7 @@ Credentials expected at:
 - `~/keys/fred/key.txt` — FRED API key
 - `~/keys/anthropic/key.txt` — Anthropic API key
 - `~/keys/aws/ses-credentials.json` — SES SMTP credentials
+- `~/keys/telegram/bot_token.txt` — Telegram bot token (from @BotFather)
 
 ## Entry points
 
@@ -71,3 +72,4 @@ Credentials expected at:
 - `scripts/send_daily.py` — compose and send (`--dry-run`, `--force-finding <slug>`, `--force-seed <id>`)
 - `scripts/status.py` — system health dashboard
 - `scripts/smoke_analytics.py` — analytics smoke test
+- `scripts/telegram_bot.py` — Telegram Q&A bot (`--get-chat-id` for first-time setup); runs as a persistent daemon on EC2
