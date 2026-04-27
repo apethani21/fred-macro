@@ -17,6 +17,7 @@ UPDATE_LOG_PATH = DATA_DIR / "update_log.parquet"
 RELEASE_CALENDAR_PATH = DATA_DIR / "release_calendar.parquet"
 RELEASE_SERIES_PATH = DATA_DIR / "release_series.parquet"
 DISCOVERY_PATH = DATA_DIR / "discovery.parquet"
+SEP_DOTS_PATH = DATA_DIR / "sep_dots.parquet"
 
 KNOWLEDGE_DIR = PROJECT_ROOT / "knowledge"
 STATE_DIR = PROJECT_ROOT / "state"

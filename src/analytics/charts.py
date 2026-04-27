@@ -23,6 +23,7 @@ import numpy as np
 import pandas as pd
 from matplotlib.axes import Axes
 from matplotlib.figure import Figure
+from matplotlib.ticker import MultipleLocator
 
 from .episodes import nber_recession_ranges
 
@@ -49,6 +50,7 @@ FIGSIZE_DUAL = (14, 4)  # two side-by-side panels (full history + zoom)
 FIGSIZE_DISTRIBUTION = (6.5, 3.8)
 FIGSIZE_HEATMAP = (7, 5.5)
 FIGSIZE_MULTI_PANEL = (10, 5)
+FIGSIZE_DOT_PLOT = (10, 5)
 
 # Minimum series span (years) before showing a zoom panel is useful.
 _ZOOM_MIN_SPAN_YEARS = 8
@@ -149,6 +151,7 @@ def add_source_footer(
     fig: Figure,
     series_ids: Iterable[str],
     as_of: date | datetime | pd.Timestamp | None = None,
+    source_label: str = "FRED",
 ) -> None:
     as_of = as_of or datetime.utcnow().date()
     if isinstance(as_of, (datetime, pd.Timestamp)):
@@ -156,7 +159,7 @@ def add_source_footer(
     ids = ", ".join(series_ids)
     fig.text(
         0.01, 0.01,
-        f"Source: FRED ({ids}). As of {as_of.isoformat()}.",
+        f"Source: {source_label} ({ids}). As of {as_of.isoformat()}.",
         fontsize=8, color="#6B7280", ha="left", va="bottom",
     )
 
@@ -609,6 +612,132 @@ def era_comparison_bar(
     ax.legend(loc="best", frameon=False, fontsize=9)
     _set_titles(ax, title, subtitle)
     plt.tight_layout()
+    return fig, ax
+
+
+# ---------- FOMC dot plot ----------
+
+def _dot_jitter(n: int, max_half: float = 0.28) -> np.ndarray:
+    """Evenly-spaced horizontal offsets for n dots within one year column."""
+    if n <= 1:
+        return np.array([0.0])
+    return np.linspace(-max_half, max_half, n)
+
+
+def _expand_counts(df: pd.DataFrame) -> pd.DataFrame:
+    """Expand participant_count to one row per participant (forecast_year, rate)."""
+    rows: list[dict] = []
+    for _, row in df.iterrows():
+        base = {"forecast_year": row["forecast_year"], "rate": float(row["rate"])}
+        rows.extend([base.copy() for _ in range(int(row["participant_count"]))])
+    return pd.DataFrame(rows)
+
+
+def dot_plot(
+    df: pd.DataFrame,
+    title: str,
+    subtitle: str | None = None,
+    compare_df: pd.DataFrame | None = None,
+    current_rate: float | None = None,
+    meeting_label: str = "Latest SEP",
+    compare_label: str = "Previous SEP",
+) -> tuple[Figure, Axes]:
+    """FOMC dot plot: participant fed-funds-rate projections by forecast year.
+
+    Parameters
+    ----------
+    df:
+        Columns forecast_year, rate, participant_count for the latest meeting.
+    compare_df:
+        Optional second meeting (shown in a lighter shade for before/after).
+    current_rate:
+        If given, draws a dashed horizontal line at the current effective FFR.
+    meeting_label / compare_label:
+        Legend labels for the two meetings.
+
+    Each participant is one dot; dots at the same (year, rate) are spread
+    symmetrically within the column.  The median per year is marked with a
+    diamond.
+    """
+    apply_style()
+
+    # Canonical year order: numeric years ascending, then non-numeric ("Longer run").
+    all_years = list(df["forecast_year"].unique())
+    if compare_df is not None and not compare_df.empty:
+        for y in compare_df["forecast_year"].unique():
+            if y not in all_years:
+                all_years.append(y)
+
+    def _year_key(y: str) -> tuple:
+        try:
+            return (0, int(y))
+        except ValueError:
+            return (1, y)
+
+    ordered_years = sorted(all_years, key=_year_key)
+    year_pos = {y: i for i, y in enumerate(ordered_years)}
+
+    fig, ax = plt.subplots(figsize=FIGSIZE_DOT_PLOT)
+
+    def _plot(
+        meeting_df: pd.DataFrame,
+        color: str,
+        alpha: float,
+        label: str,
+        x_shift: float = 0.0,
+    ) -> None:
+        expanded = _expand_counts(meeting_df)
+        medians = {
+            y: float(np.median(grp["rate"].values))
+            for y, grp in expanded.groupby("forecast_year")
+        }
+        first_year = True
+        for year in ordered_years:
+            subset = sorted(expanded[expanded["forecast_year"] == year]["rate"].values)
+            if not subset:
+                continue
+            xc = year_pos[year] + x_shift
+            for rate, dx in zip(subset, _dot_jitter(len(subset))):
+                ax.scatter(
+                    xc + dx, rate,
+                    color=color, alpha=alpha, s=38, zorder=3,
+                    linewidths=0,
+                )
+            if year in medians:
+                ax.scatter(
+                    xc, medians[year],
+                    color=color, alpha=min(alpha + 0.2, 1.0),
+                    marker="D", s=65, zorder=5,
+                    edgecolors="white", linewidths=0.8,
+                    label=label if first_year else "_nolegend_",
+                )
+                first_year = False
+
+    if compare_df is not None and not compare_df.empty:
+        _plot(compare_df, PALETTE[5], 0.40, compare_label, x_shift=-0.09)
+        _plot(df, PALETTE[0], 0.88, meeting_label, x_shift=0.09)
+    else:
+        _plot(df, PALETTE[0], 0.88, meeting_label)
+
+    if current_rate is not None:
+        ax.axhline(
+            current_rate, color=PALETTE[1], linewidth=1.2, linestyle="--", alpha=0.85,
+            label=f"Current FFR: {current_rate:.2f}%",
+        )
+
+    ax.set_xticks(range(len(ordered_years)))
+    ax.set_xticklabels(ordered_years, fontsize=10)
+    ax.set_xlim(-0.6, len(ordered_years) - 0.4)
+    ax.set_xlabel("End of year", fontsize=11)
+    ax.set_ylabel("Percent", fontsize=11)
+    ax.yaxis.set_major_formatter(plt.FuncFormatter(lambda x, _: f"{x:.2f}"))
+    ax.yaxis.set_minor_locator(MultipleLocator(0.125))
+    ax.grid(which="minor", axis="y", color="#F3F4F6", linewidth=0.4)
+
+    if compare_df is not None and not compare_df.empty or current_rate is not None:
+        ax.legend(loc="upper right", frameon=False, fontsize=9)
+
+    _set_titles(ax, title, subtitle)
     return fig, ax
 
 

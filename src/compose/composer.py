@@ -1267,7 +1267,7 @@ def generate_equation_image(finding: "Finding", chart_dir: Path, today: date) ->
 
 _CHART_KINDS = {"correlation_shift", "regime_transition", "notable_move_level",
                 "notable_move_change", "lead_lag_change", "cointegration_break",
-                "harvested_source", "fomc_event_study", "structural_break",
+                "harvested_source", "fomc_event_study", "fomc_sep", "structural_break",
                 "cp_factor_signal", "ns_factor_extreme", "btp_bund_regime",
                 "spread_extreme", "decomposition_shift", "cross_asset_factor"}
 
@@ -1570,6 +1570,77 @@ def _chart1_context_series(
         return None
 
 
+def _chart_sep_dot_plot(
+    chart_dir: Path,
+    slug_short: str,
+    today: date,
+    chart_n: int = 1,
+    comparison: bool = False,
+) -> "Path | None":
+    """SEP dot-plot chart.
+
+    With comparison=False: latest meeting with current FFR line.
+    With comparison=True: latest vs previous meeting overlaid.
+    """
+    import matplotlib.pyplot as plt
+    from src.analytics.charts import dot_plot, save_to, add_source_footer
+    from src.analytics.sep import (
+        load_sep_dots,
+        latest_sep_date,
+        previous_sep_date,
+    )
+    from src.analytics.data import load_series
+
+    try:
+        all_dots = load_sep_dots()
+        if all_dots.empty:
+            logger.info("SEP dot plot skipped: no data in sep_dots.parquet")
+            return None
+
+        latest_date = latest_sep_date(all_dots)
+        df_latest = all_dots[all_dots["meeting_date"] == latest_date]
+
+        compare_df = None
+        compare_label = "Previous SEP"
+        if comparison:
+            prev_date = previous_sep_date(all_dots)
+            if prev_date:
+                compare_df = all_dots[all_dots["meeting_date"] == prev_date]
+                compare_label = f"SEP {prev_date}"
+
+        # Load current effective fed funds rate for context line.
+        current_rate: float | None = None
+        try:
+            dff = load_series("DFF")
+            if not dff.dropna().empty:
+                current_rate = float(dff.dropna().iloc[-1])
+        except Exception:
+            pass
+
+        subtitle = f"As of {latest_date}"
+        if comparison and compare_df is not None and not compare_df.empty:
+            subtitle = f"{latest_date} vs {prev_date}"
+
+        fig, _ = dot_plot(
+            df_latest,
+            title="FOMC Dot Plot — Fed Funds Rate Projections",
+            subtitle=subtitle,
+            compare_df=compare_df,
+            current_rate=current_rate,
+            meeting_label=f"SEP {latest_date}",
+            compare_label=compare_label,
+        )
+        add_source_footer(fig, ["fomcprojtabl"], today, source_label="Federal Reserve")
+        out = chart_dir / f"{today.isoformat()}_{slug_short}_chart{chart_n}.png"
+        save_to(fig, out)
+        plt.close(fig)
+        logger.info("SEP dot plot (chart %d) saved: %s", chart_n, out)
+        return out
+    except Exception as e:
+        logger.warning("SEP dot plot (chart %d) skipped: %s", chart_n, e)
+        return None
+
+
 def generate_charts(
     pick: LessonPick,
     ctx: dict[str, SeriesSnapshot],
@@ -1635,9 +1706,20 @@ def generate_charts(
             p = _chart3_distribution(finding, ctx, chart_dir, slug_short, today)
             if p: paths.append(p)
 
-    # fomc_event_study: era comparison bar as chart 2
+    # fomc_event_study: era comparison bar as chart 2; dot plot as chart 3
     if finding.kind == "fomc_event_study":
         p = _chart2_fomc_era_comparison(finding, chart_dir, slug_short, today)
+        if p: paths.append(p)
+        if len(paths) < 3:
+            p = _chart_sep_dot_plot(chart_dir, slug_short, today, chart_n=3, comparison=False)
+            if p: paths.append(p)
+
+    # fomc_sep: chart 1 = comparison dot plot, chart 2 = latest with FFR line
+    if finding.kind == "fomc_sep":
+        paths = []  # override default time-series chart 1
+        p = _chart_sep_dot_plot(chart_dir, slug_short, today, chart_n=1, comparison=True)
+        if p: paths.append(p)
+        p = _chart_sep_dot_plot(chart_dir, slug_short, today, chart_n=2, comparison=False)
         if p: paths.append(p)
 
     return paths

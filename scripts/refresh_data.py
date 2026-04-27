@@ -35,6 +35,7 @@ import pandas as pd
 from src.ingest.discovery import DiscoveryConfig, discover, universe_by_frequency
 from src.ingest.ecb_client import EcbClient
 from src.ingest.ecb_release_calendar import refresh_cb_calendar
+from src.ingest.sep_client import SepClient
 from src.ingest.ecb_update import run_ecb_refresh
 from src.ingest.fred_client import FredClient
 from src.ingest.paths import DISCOVERY_PATH, METADATA_PATH
@@ -97,6 +98,7 @@ def main() -> int:
     parser.add_argument("--max-per-release", type=int, default=200, help="Max series per release (with --discover).")
     parser.add_argument("--ecb", action="store_true", help="Refresh ECB SDW series (deposit rate, HICP, yield curve, M3, wages, etc.).")
     parser.add_argument("--release-calendar", action="store_true", help="Also refresh the release calendar.")
+    parser.add_argument("--sep", action="store_true", help="Refresh FOMC SEP dot-plot data (sep_dots.parquet).")
     parser.add_argument("--skip-refresh", action="store_true", help="Run discovery/calendar but don't refresh series data.")
     args = parser.parse_args()
 
@@ -173,6 +175,14 @@ def main() -> int:
             run.set("ecb_series_errors", ecb_errors)
             if ecb_errors:
                 exit_code = 1
+
+        # --- SEP dot-plot refresh ---
+        if args.sep:
+            sep_client = SepClient()
+            sep_df = sep_client.refresh_all()
+            sep_meetings = sep_df["meeting_date"].nunique() if not sep_df.empty else 0
+            print(f"[SEP] {sep_meetings} meetings stored")
+            run.set("sep_meetings", sep_meetings)
 
         run.set("exit_code", exit_code)
 
