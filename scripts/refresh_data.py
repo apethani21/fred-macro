@@ -118,6 +118,14 @@ def main() -> int:
         # Always merge static G7+ central bank calendar dates (fast, no network call).
         refresh_cb_calendar()
 
+        # --- SEP dot-plot refresh (no FRED dependency; run before universe logic) ---
+        if args.sep:
+            sep_client = SepClient()
+            sep_df = sep_client.refresh_all()
+            sep_meetings = sep_df["meeting_date"].nunique() if not sep_df.empty else 0
+            print(f"[SEP] {sep_meetings} meetings stored")
+            run.set("sep_meetings", sep_meetings)
+
         # --- determine universe ---
         if args.series:
             universe = {args.partition: list(args.series)}
@@ -175,14 +183,6 @@ def main() -> int:
             run.set("ecb_series_errors", ecb_errors)
             if ecb_errors:
                 exit_code = 1
-
-        # --- SEP dot-plot refresh ---
-        if args.sep:
-            sep_client = SepClient()
-            sep_df = sep_client.refresh_all()
-            sep_meetings = sep_df["meeting_date"].nunique() if not sep_df.empty else 0
-            print(f"[SEP] {sep_meetings} meetings stored")
-            run.set("sep_meetings", sep_meetings)
 
         run.set("exit_code", exit_code)
 
