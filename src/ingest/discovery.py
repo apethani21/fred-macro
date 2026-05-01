@@ -25,6 +25,23 @@ logger = logging.getLogger(__name__)
 
 ROOT_CATEGORY_ID = 0
 
+# Series that must always be in the tracked universe regardless of what the
+# category/release walk discovers. These anchor the market snapshot table and
+# are the series most likely to be missed by popularity-ranked discovery
+# (e.g. gold spot, VIX).
+PINNED_SERIES: tuple[str, ...] = (
+    # Rates — usually auto-discovered, but pin for safety
+    "DTB3", "DGS2", "DGS5", "DGS10", "DGS30",
+    "T10Y2Y", "T10Y3M", "DFII10", "T10YIE", "T5YIFR",
+    # Credit
+    "BAMLC0A0CM", "BAMLH0A0HYM2",
+    # FX
+    "DTWEXBGS", "DEXUSEU", "DEXJPUS", "DEXUSUK", "DEXUSAL",
+    # Commodities & vol — often not in top-N by popularity
+    # GOLDAMGBD228NLBM (LBMA gold fix) dropped: discontinued on FRED (ICE/IBA paywall).
+    "DCOILWTICO", "VIXCLS",
+)
+
 # Names match the release-name string returned by /fred/releases. The IDs are
 # resolved at runtime by fuzzy match so they don't rot if FRED renumbers.
 MAJOR_RELEASE_NAMES: tuple[str, ...] = (
@@ -149,6 +166,31 @@ def discover_by_releases(
     return pd.DataFrame(rows)
 
 
+def discover_pinned(client: FredClient) -> pd.DataFrame:
+    """Fetch metadata for PINNED_SERIES from FRED and return a provenance DataFrame.
+
+    These rows get merged into the full discovery result so pinned series are
+    always in the tracked universe, even if they don't appear in the top-N
+    category walk or major-release lists.
+    """
+    rows: list[dict] = []
+    for sid in PINNED_SERIES:
+        try:
+            s = client.series(sid)
+            rows.append({
+                "series_id": s.get("id", sid),
+                "title": s.get("title"),
+                "frequency_short": s.get("frequency_short"),
+                "popularity": s.get("popularity"),
+                "source_type": "pinned",
+                "source_id": sid,
+                "source_name": "PINNED_SERIES",
+            })
+        except Exception as e:
+            logger.warning("discover_pinned: failed to fetch metadata for %s: %s", sid, e)
+    return pd.DataFrame(rows)
+
+
 def discover(client: FredClient, config: DiscoveryConfig | None = None) -> pd.DataFrame:
     """Run all configured policies; return a long-format provenance DataFrame.
 
@@ -170,10 +212,9 @@ def discover(client: FredClient, config: DiscoveryConfig | None = None) -> pd.Da
                 client, max_series_per_release=config.max_series_per_release
             )
         )
-    if not frames:
-        return pd.DataFrame(
-            columns=["series_id", "title", "frequency_short", "popularity", "source_type", "source_id", "source_name"]
-        )
+    # Always include pinned series — these anchor the market snapshot table.
+    frames.append(discover_pinned(client))
+
     df = pd.concat(frames, ignore_index=True)
     df = df.dropna(subset=["series_id"]).reset_index(drop=True)
     return df

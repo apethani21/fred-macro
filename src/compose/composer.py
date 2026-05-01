@@ -76,7 +76,7 @@ _SNAPSHOT_SERIES: list = [
     ("DEXUSAL",   "AUD/USD",    "fx_4"),
     ("__section__", "COMMODITIES & VOL"),
     ("DCOILWTICO",       "WTI",   "dollar_1"),
-    ("GOLDAMGBD228NLBM", "Gold",  "dollar_0"),
+    # GOLDAMGBD228NLBM (LBMA gold fix) discontinued on FRED — ICE/IBA moved to paywall.
     ("VIXCLS",           "VIX",   "plain_1"),
 ]
 
