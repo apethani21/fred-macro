@@ -150,28 +150,29 @@ def _ses_client(region: str):
 
 
 def _build_mime(composed: ComposedEmail, from_addr: str, to_addr: str) -> MIMEMultipart:
-    """Build a MIME multipart/mixed email with optional inline charts.
+    """Build the email MIME structure.
 
-    Structure when charts are present:
-        multipart/mixed
-        └── multipart/related   ← binds HTML to inline images
-            ├── multipart/alternative
-            │   ├── text/plain
-            │   └── text/html (cid: references)
-            └── MIMEImage(s)
+    With inline images (the normal case):
+        multipart/related          ← outermost; tells clients images are inline
+        ├── multipart/alternative
+        │   ├── text/plain
+        │   └── text/html (cid: references)
+        └── image/png × N (Content-ID: <chart_N>)
 
-    Without charts the related wrapper is omitted (just mixed → alternative).
-    Images must live inside multipart/related alongside the HTML that references
-    them; attaching them to multipart/mixed causes clients to show them as
-    attachments instead of rendering them inline.
+    Without images:
+        multipart/alternative
+        ├── text/plain
+        └── text/html
+
+    Using multipart/mixed as the outermost container (even with a
+    multipart/related child) causes Gmail and Apple Mail to treat the images
+    as file attachments rather than rendering them inline.
     """
-    outer = MIMEMultipart("mixed")
-    outer["Subject"] = composed.subject
-    outer["From"] = from_addr
-    outer["To"] = to_addr
-    outer["Date"] = email.utils.formatdate(localtime=True)
+    alt = MIMEMultipart("alternative")
+    alt.attach(MIMEText(composed.text_body, "plain", "utf-8"))
+    alt.attach(MIMEText(composed.html_body, "html", "utf-8"))
 
-    # Collect inline image parts first so we know whether a related wrapper is needed.
+    # Collect inline image parts.
     inline_images: list[MIMEImage] = []
 
     for i, path in enumerate(composed.chart_paths or []):
@@ -192,21 +193,18 @@ def _build_mime(composed: ComposedEmail, from_addr: str, to_addr: str) -> MIMEMu
         img.add_header("Content-Disposition", "inline", filename=eq_path.name)
         inline_images.append(img)
 
-    alt = MIMEMultipart("alternative")
-    alt.attach(MIMEText(composed.text_body, "plain", "utf-8"))
-    alt.attach(MIMEText(composed.html_body, "html", "utf-8"))
-
     if inline_images:
-        # Wrap alternative + images together in multipart/related so clients
-        # know the images are referenced inline by the HTML, not standalone.
-        related = MIMEMultipart("related")
-        related.attach(alt)
-        for img in inline_images:
-            related.attach(img)
-        outer.attach(related)
-    else:
+        outer = MIMEMultipart("related")
         outer.attach(alt)
+        for img in inline_images:
+            outer.attach(img)
+    else:
+        outer = alt
 
+    outer["Subject"] = composed.subject
+    outer["From"] = from_addr
+    outer["To"] = to_addr
+    outer["Date"] = email.utils.formatdate(localtime=True)
     return outer
 
 
