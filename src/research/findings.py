@@ -43,6 +43,8 @@ STATS_FILES = {
     # Relationship monitor: named spread and decomposition relationships
     "relationship_spreads": STATS_DIR / "relationship_spreads.parquet",
     "relationship_decompositions": STATS_DIR / "relationship_decompositions.parquet",
+    # M4: recession probability logit model
+    "recession_logit": STATS_DIR / "recession_logit.parquet",
 }
 
 
