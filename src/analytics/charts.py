@@ -64,7 +64,7 @@ def apply_style() -> None:
     if _STYLE_APPLIED:
         return
     plt.rcParams.update({
-        "font.family": ["Helvetica Neue", "Helvetica", "Arial", "DejaVu Sans"],
+        "font.family": ["DejaVu Sans", "Helvetica Neue", "Helvetica", "Arial"],
         "font.size": 10,
         "axes.titlesize": 14,
         "axes.titleweight": "bold",
