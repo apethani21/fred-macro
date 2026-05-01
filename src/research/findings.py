@@ -329,6 +329,7 @@ def append_stats(name: str, rows: pd.DataFrame) -> Path:
         "cross_asset_factors": ["regime", "factor_name", "run_date"],
         "relationship_spreads": ["spread_id", "run_date"],
         "relationship_decompositions": ["decomp_id", "component", "run_date"],
+        "recession_logit": ["date", "run_date"],
     }[name]
     combined = combined.drop_duplicates(subset=dedup_keys, keep="last").reset_index(drop=True)
     save_parquet_atomic(combined, path)
