@@ -1892,12 +1892,12 @@ def compose_email(pick: LessonPick, today: date | None = None) -> ComposedEmail:
     chart_dir.mkdir(parents=True, exist_ok=True)
     equation_path = generate_equation_image(pick.finding, chart_dir, today)
 
-    cids = [f"chart_{i}" for i in range(len(chart_paths))]
-    eq_cid = "equation_0" if equation_path else None
     template_body = draft["body_html"]  # Preserves {{CHART_N}}/{{EQUATION}} placeholders
+    # Embed charts as base64 data URIs so images are self-contained in the HTML.
+    # CID references require multipart/related and are broken by Apple's Private Relay.
     html_body = render_html(
         draft["subject"], template_body, today,
-        chart_cids=cids, equation_cid=eq_cid,
+        chart_paths=chart_paths, equation_path=equation_path,
     )
 
     return ComposedEmail(

@@ -8,8 +8,9 @@ Credential resolution (live send):
 SMTP is preferred when the JSON credentials file is present (typical EC2 setup).
 boto3 is used on local dev where IAM API keys may be configured instead.
 
-Charts are embedded as inline MIME attachments (Content-ID references) so
-they render inline in most email clients without a separate download.
+Charts are embedded as base64 data URIs inside the HTML body so they render
+inline in all email clients without relying on CID matching. This is simpler
+than multipart/related and unaffected by relay services (e.g. Apple Private Relay).
 
 Dry-run mode (DRY_RUN=true in .env, or --dry-run flag): writes rendered HTML
 to state/last_email.html and chart PNGs to state/charts/{date}/ instead of
@@ -19,13 +20,9 @@ from __future__ import annotations
 
 import email.utils
 import logging
-import mimetypes
 import os
 from dataclasses import dataclass
 from datetime import date
-from email import encoders
-from email.mime.base import MIMEBase
-from email.mime.image import MIMEImage
 from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
 from pathlib import Path
@@ -152,55 +149,16 @@ def _ses_client(region: str):
 def _build_mime(composed: ComposedEmail, from_addr: str, to_addr: str) -> MIMEMultipart:
     """Build the email MIME structure.
 
-    With inline images (the normal case):
-        multipart/related          ← outermost; tells clients images are inline
-        ├── multipart/alternative
-        │   ├── text/plain
-        │   └── text/html (cid: references)
-        └── image/png × N (Content-ID: <chart_N>)
+    Charts are embedded as base64 data URIs inside html_body, so no inline
+    image MIME parts are needed. Structure is always multipart/alternative:
 
-    Without images:
         multipart/alternative
         ├── text/plain
-        └── text/html
-
-    Using multipart/mixed as the outermost container (even with a
-    multipart/related child) causes Gmail and Apple Mail to treat the images
-    as file attachments rather than rendering them inline.
+        └── text/html (base64 data: URIs for any charts)
     """
-    alt = MIMEMultipart("alternative")
-    alt.attach(MIMEText(composed.text_body, "plain", "utf-8"))
-    alt.attach(MIMEText(composed.html_body, "html", "utf-8"))
-
-    # Collect inline image parts.
-    inline_images: list[MIMEImage] = []
-
-    for i, path in enumerate(composed.chart_paths or []):
-        if path and path.exists():
-            with path.open("rb") as f:
-                img_data = f.read()
-            img = MIMEImage(img_data, "png")
-            img.add_header("Content-ID", f"<chart_{i}>")
-            img.add_header("Content-Disposition", "inline", filename=path.name)
-            inline_images.append(img)
-
-    eq_path = getattr(composed, "equation_path", None)
-    if eq_path and eq_path.exists():
-        with eq_path.open("rb") as f:
-            img_data = f.read()
-        img = MIMEImage(img_data, "png")
-        img.add_header("Content-ID", "<equation_0>")
-        img.add_header("Content-Disposition", "inline", filename=eq_path.name)
-        inline_images.append(img)
-
-    if inline_images:
-        outer = MIMEMultipart("related")
-        outer.attach(alt)
-        for img in inline_images:
-            outer.attach(img)
-    else:
-        outer = alt
-
+    outer = MIMEMultipart("alternative")
+    outer.attach(MIMEText(composed.text_body, "plain", "utf-8"))
+    outer.attach(MIMEText(composed.html_body, "html", "utf-8"))
     outer["Subject"] = composed.subject
     outer["From"] = from_addr
     outer["To"] = to_addr
