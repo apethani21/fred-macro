@@ -149,26 +149,23 @@ def _ses_client(region: str):
 def _build_mime(composed: ComposedEmail, from_addr: str, to_addr: str) -> MIMEMultipart:
     """Build the email MIME structure.
 
-    With inline images (the normal case):
-        multipart/related; type="multipart/alternative"
-        ├── multipart/alternative
-        │   ├── text/plain
-        │   └── text/html (cid: references)
-        └── image/png × N (Content-ID: <chart_N>)
+    With inline images:
+        multipart/alternative
+        ├── text/plain
+        └── multipart/related; type="text/html"
+            ├── text/html (cid: references)
+            └── image/png × N (Content-ID: <chart_N>)
 
     Without images:
         multipart/alternative
         ├── text/plain
         └── text/html
 
-    RFC 2387 requires the `type` parameter on multipart/related to identify
-    the root body part. Without it some clients (including Gmail) fall back to
-    treating the message as multipart/mixed and show images as attachments.
+    Images are siblings of text/html inside multipart/related, not siblings of
+    multipart/alternative. Gmail (and most clients) require this nesting: the
+    related container wraps only the HTML + its inline images; multipart/alternative
+    handles the plain-text fallback at the outer level.
     """
-    alt = MIMEMultipart("alternative")
-    alt.attach(MIMEText(composed.text_body, "plain", "utf-8"))
-    alt.attach(MIMEText(composed.html_body, "html", "utf-8"))
-
     inline_images: list[MIMEImage] = []
 
     for i, path in enumerate(composed.chart_paths or []):
@@ -189,15 +186,21 @@ def _build_mime(composed: ComposedEmail, from_addr: str, to_addr: str) -> MIMEMu
         img.add_header("Content-Disposition", "inline", filename=eq_path.name)
         inline_images.append(img)
 
+    html_part = MIMEText(composed.html_body, "html", "utf-8")
+
     if inline_images:
-        # type= parameter is required by RFC 2387; omitting it causes Gmail
-        # to fall back to multipart/mixed behaviour (images as attachments).
-        outer = MIMEMultipart("related", type="multipart/alternative")
-        outer.attach(alt)
+        # Wrap text/html + inline images together; multipart/alternative sits outside.
+        related = MIMEMultipart("related", type="text/html")
+        related.attach(html_part)
         for img in inline_images:
-            outer.attach(img)
+            related.attach(img)
+        html_or_related = related
     else:
-        outer = alt
+        html_or_related = html_part
+
+    outer = MIMEMultipart("alternative")
+    outer.attach(MIMEText(composed.text_body, "plain", "utf-8"))
+    outer.attach(html_or_related)
 
     outer["Subject"] = composed.subject
     outer["From"] = from_addr
