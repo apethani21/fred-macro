@@ -152,6 +152,8 @@ def compose_email_from_seed(
         generate_charts,
         generate_equation_image,
         render_html,
+        rewrite_opener,
+        apply_bold_stats,
         CHARTS_DIR,
         _ctx_to_dict,
     )
@@ -170,6 +172,16 @@ def compose_email_from_seed(
 
     if flags:
         logger.info("Seed fact-check flags (%d): %s", len(flags), "; ".join(flags))
+
+    if any("throat-clearing" in f.lower() or "clearing opener" in f.lower() for f in flags):
+        draft = rewrite_opener(draft)
+        flags = [f for f in flags if "throat-clearing" not in f.lower() and "clearing opener" not in f.lower()]
+        logger.info("Opener rewrite applied")
+
+    if any("<strong>" in f for f in flags):
+        draft = apply_bold_stats(draft)
+        flags = [f for f in flags if "<strong>" not in f]
+        logger.info("Bolding pass applied")
 
     shim_pick = _seed_to_lesson_pick(seed, release_context=release_context)
     chart_paths = generate_charts(shim_pick, ctx, today)

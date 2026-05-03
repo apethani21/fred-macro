@@ -1034,6 +1034,8 @@ def fact_check_draft(
             "not present", "is appropriate", "no flag.", "it is not a",
             "so it is not", "does not appear", "not a generic",
             "retracted", "— acceptable", "none found beyond", "rounds correctly to",
+            "so not flagged", "not flagged", "no confirmed", "no too-obvious",
+            "no throat-clearing confirmed", "not a throat-clearing",
         )
         cleaned = [
             f for f in raw_flags
@@ -1933,6 +1935,53 @@ class ComposedEmail:
     citation_count: int = 0
 
 
+# ---------- opener rewrite pass ----------
+
+_OPENER_SYSTEM = """\
+You are editing the opening of a macro finance email. The current opener is throat-clearing: it \
+contains no information, only setup or meta-commentary about what the email is about to say.
+
+Rewrite ONLY the first paragraph (up to and including the first </p> tag) so that it opens with a \
+specific, concrete fact, number, or observation — not a statement about what the reader will see or \
+what "the usual scrutiny" will cover. The first sentence must contain information.
+
+Rules:
+- The opening must reference the actual content: a specific value, historical observation, or \
+  empirical claim.
+- Do NOT start with "The FOMC", "Today", "This week", "With the", or any phrase that defers the \
+  information to later.
+- Keep the same hook anchor (upcoming release, recent event) but make the first sentence carry \
+  informational weight.
+- Do not change anything after the first </p> tag.
+- Preserve ALL {{CHART_N}} and {{EQUATION}} placeholders exactly as-is.
+
+OUTPUT FORMAT (raw JSON, no code fence):
+{"body_html": "...", "body_text": "..."}
+"""
+
+
+def rewrite_opener(draft: dict) -> dict:
+    """Rewrite the first paragraph when the factchecker flags a throat-clearing opener."""
+    client = _client()
+    user_content = (
+        f"BODY HTML:\n{draft['body_html']}\n\n"
+        f"BODY TEXT:\n{draft.get('body_text', '')}\n\n"
+        "Rewrite the first paragraph to open with concrete information. Return JSON."
+    )
+    response = client.messages.create(
+        model=MODEL,
+        max_tokens=4096,
+        system=[{"type": "text", "text": _OPENER_SYSTEM, "cache_control": {"type": "ephemeral"}}],
+        messages=[{"role": "user", "content": user_content}],
+    )
+    try:
+        revised = _extract_json(response.content[0].text)
+        return {**draft, **revised}
+    except (ValueError, json.JSONDecodeError) as e:
+        logger.warning("Opener rewrite parse error: %s — returning original draft", e)
+        return draft
+
+
 # ---------- bolding pass ----------
 
 _BOLDING_SYSTEM = """\
@@ -2005,9 +2054,16 @@ def compose_email(pick: LessonPick, today: date | None = None) -> ComposedEmail:
     if flags:
         logger.info("Fact-check flags (%d): %s", len(flags), "; ".join(flags))
 
+    # If factcheck caught a throat-clearing opener, rewrite the first paragraph.
+    if any("throat-clearing" in f.lower() or "clearing opener" in f.lower() for f in flags):
+        draft = rewrite_opener(draft)
+        flags = [f for f in flags if "throat-clearing" not in f.lower() and "clearing opener" not in f.lower()]
+        logger.info("Opener rewrite applied")
+
     # If factcheck caught unbolded stats, apply a targeted bolding pass before citation revision.
     if any("<strong>" in f for f in flags):
         draft = apply_bold_stats(draft)
+        flags = [f for f in flags if "<strong>" not in f]
         logger.info("Bolding pass applied")
 
     # Web-search citation pass: find primary sources for mechanistic claims
