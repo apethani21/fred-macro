@@ -29,7 +29,7 @@ topic_seeds.jsonl + findings.md + data/ + knowledge/concepts.md
 
 **Topic-seed composition**: nightly scan writes lightweight `TopicSeed` objects (raw stats, no prose) to `state/topic_seeds.jsonl`. Morning send picks the best seed and Claude decides the organizing idea and hook at compose time using fresh parquet data — separating detection (nightly) from interpretation (morning).
 
-**Composition**: one organizing idea per email, 400–600 words. All numbers queried from parquet — the LLM writes prose around data, not the other way around. Three-pass pipeline before send: (1) fast fact-check for number accuracy and style, (2) agentic web-search citation pass that identifies mechanistic claims, finds primary academic sources, and adds inline `[N]` superscripts with a References section, (3) revision incorporating citations. BM25 concept retrieval from `knowledge/concepts.md` for institutional context.
+**Composition**: one organizing idea per email, 400–600 words. All numbers queried from parquet — the LLM writes prose around data, not the other way around. Five-pass pipeline before send: (1) fast fact-check for number accuracy, style, throat-clearing openers, and unbolded statistics, (2) automated opener rewrite if throat-clearing detected, (3) automated bolding pass if unbolded stats detected, (4) agentic web-search citation pass that identifies mechanistic claims, finds primary academic sources, and adds inline `[N]` superscripts with a References section, (5) revision incorporating citations. BM25 concept retrieval from `knowledge/concepts.md` for institutional context.
 
 **Analytics toolkit** (`src/analytics/`): `data.py`, `stats.py`, `charts.py`, `episodes.py`, `fomc.py`, `bonds.py`, `recession.py`, `indicators.py`, `ecb.py`, `format.py`. Shared across research, composition, and ad-hoc analysis.
 
@@ -40,16 +40,6 @@ topic_seeds.jsonl + findings.md + data/ + knowledge/concepts.md
 - **Fed releases tracked**: H.4.1, H.6, H.8, H.15, Employment Situation, CPI, PCE, GDP, Industrial Production, Retail Sales. ECB Governing Council meetings and Eurostat HICP flash dates also in release calendar.
 - **Knowledge sources**: FEDS Notes, Liberty Street Economics, SF Fed Economic Letter, BLS Handbook of Methods, BEA NIPA Methods, BIS Quarterly Review, NBER, FOMC minutes, Jackson Hole proceedings. See `knowledge/sources.md`.
 - **Paper library**: 132 curated papers across inflation, yield curve, credit/FI, FOMC event studies, nowcasting, risk appetite, FX, commodities, macro×equity, SOFR plumbing, European macro/ECB, systematic fixed income, cross-asset factor pricing (Groups A–N).
-
-## Cron schedule (EC2, UTC)
-
-| Time | Job |
-|------|-----|
-| 05:45 daily | `send_daily.py` |
-| 06:00 daily | `refresh_data.py --ecb` |
-| 14:30 weekdays | `refresh_data.py --discover` |
-| 22:00 daily | `run_research.py` |
-| 23:00 weekdays | `run_harvest.py --max 5` |
 
 ## Setup
 
@@ -66,8 +56,8 @@ Credentials expected at:
 
 ## Entry points
 
-- `scripts/refresh_data.py` — pull/refresh series data (`--ecb` includes ECB SDW series)
-- `scripts/run_research.py` — recompute findings (`--fomc`, `--fomc-only`, `--relationships-only`, `--questions-only`)
+- `scripts/refresh_data.py` — pull/refresh series data (`--ecb` for ECB SDW, `--sep` for FOMC dot-plot, `--series` for targeted refresh)
+- `scripts/run_research.py` — recompute findings (`--fomc`, `--fomc-only`, `--ns-factors`, `--cross-asset`, `--enrich`)
 - `scripts/run_harvest.py` — web-enrich findings backlog
 - `scripts/send_daily.py` — compose and send (`--dry-run`, `--force-finding <slug>`, `--force-seed <id>`)
 - `scripts/status.py` — system health dashboard
