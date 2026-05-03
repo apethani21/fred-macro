@@ -537,23 +537,65 @@ _DRAFT_SYSTEM = """\
 You compose a daily macro education email for a quantitative equity finance professional (3 years, equities focus).
 They are fluent with statistics, time series, and financial markets.
 Explain macro-specific jargon and institutional mechanics they may not know from equities.
-When a macro concept has an equities-market analogue, point it out.
+When a macro concept has a genuine equities-market analogue that illuminates the concept, use it — but only when it truly clarifies. Do not force an analogy for concepts the reader already knows intuitively (unemployment, GDP growth, inflation) or where the equities parallel is superficial.
 
-TARGET: 500–700 words total (excluding the Terms & Mechanics section). One email, one organizing idea.
+TARGET: One email, one organizing idea. Word-count target varies by finding kind (see STRUCTURE below).
 
-STRUCTURE — divide the email using the <h3> section headers listed below. Use EXACTLY these header strings and no others. Do not create custom headers or use the finding title as a header.
-1. (no header) Hook (2–3 sentences): set the scene — introduce the topic and why it is worth understanding today. If anchored to an upcoming release, name it and briefly say what it will test. Do NOT open with the empirical punchline; the hook is the door, not the room. No generic opener.
-2. <h3>The Concept</h3> (2–4 short paragraphs): explain what the metric is, how it is constructed, what drives it, and why the reader should care — woven together naturally, not as a list. Start with the intuitive plain-English version ("think of it as X"), add the technical detail, name any direct equities analogue, and in the same flow explain what information it carries that equity prices alone do not. By the end of this section the reader understands both what this thing is and why it matters. Define every fixed-income or macro-specific term the moment it first appears — briefly, inline, in parentheses or a subordinate clause; do not save definitions for Terms & Mechanics. When the equities analogue is the clearest entry point to the concept, lead with it before the formal definition. Do not shy away from technical precision: if the concept has a clean mathematical definition (e.g., modified duration ≈ −ΔP/P ÷ Δy), state it — a quant reader learns more from the formula than from a roundabout description.
-3. <h3>The Analysis</h3> (1–2 paragraphs): the specific empirical work — what the data actually shows, with numbers, windows, and citation. This is the research behind today's email. Place {{CHART_1}} immediately after this section.
-4. <h3>Where We Are Now</h3> (1 paragraph): current reading vs history. Where in the distribution? How does today compare to prior episodes? Place {{CHART_2}} immediately after. Place {{CHART_3}} immediately after {{CHART_2}} if a third chart exists.
-5. <h3>What to Watch</h3> (1–2 sentences): the specific release, data point, or signal that would update the picture. Dated and specific — no generic closers.
-6. Terms & Mechanics (optional, 2–3 items): cover only macro-specific institutional mechanics or jargon the reader likely doesn't know cold — data construction nuances (e.g. birth-death model, seasonal adjustment, chained dollars), Fed operational plumbing (IORB, ON RRP, SRF, reserve requirements), or release methodology quirks. Skip financial basics the reader already knows: basis points, yield, standard deviation, what a spread is, price-return relationships. Format: a <ul> with one <li> per term — <strong>Term</strong>: one-sentence definition. No Q: prefix. These may appear inline in the most relevant section rather than grouped at the end. If no genuinely non-obvious mechanics appear in today's email, omit this section entirely. Do NOT use <h3>Terms & Mechanics</h3> as a section header.
+STRUCTURE — choose sections appropriate to the finding kind in the FINDING RECORD. Section headers must be chosen from the approved list below. Do not invent custom headers or use the finding title as a header.
+
+Available <h3> headers: "The Concept" · "The Context" · "The Relationship" · "The Mechanism" · "The Dot Plot" · "The Analysis" · "What Changed" · "The Reading" · "The Transition" · "Where We Are Now" · "What to Watch"
+
+Every email must contain: an opening hook (no header), at least one body section, and <h3>What to Watch</h3> as the final section.
+
+Recommended structure by finding kind:
+
+correlation_shift / lead_lag_change (500–700 words):
+  Hook · <h3>The Relationship</h3> · <h3>What Changed</h3> · <h3>Where We Are Now</h3> · <h3>What to Watch</h3>
+  <h3>The Relationship</h3>: what both series are; the mechanism that should connect them; what a shift in that connection implies.
+  <h3>What Changed</h3>: specific empirical shift — numbers, windows, subperiods. Place {{CHART_1}} immediately after, then {{CHART_2}}.
+  <h3>Where We Are Now</h3>: current correlation reading, regime it implies, closest historical analogue. Place {{CHART_3}} if it exists.
+
+notable_move_level / notable_move_change / spread_extreme (300–450 words):
+  Hook · <h3>The Context</h3> · <h3>The Reading</h3> · <h3>What to Watch</h3>
+  These are data-driven events. Keep it tight. <h3>The Context</h3> should be 1–2 short paragraphs — what the series measures and what drives it. Skip "Terms & Mechanics" unless a genuinely non-obvious mechanic appears.
+  <h3>The Reading</h3>: current value, where it sits in its historical distribution, closest prior episode. Place {{CHART_1}} immediately after, then {{CHART_2}}.
+
+regime_transition / btp_bund_regime (450–600 words):
+  Hook · <h3>The Concept</h3> · <h3>The Transition</h3> · <h3>Where We Are Now</h3> · <h3>What to Watch</h3>
+  <h3>The Transition</h3>: evidence for the regime shift — numbers, before/after. Place {{CHART_1}} after, then {{CHART_2}}.
+  <h3>Where We Are Now</h3>: current regime and nearest historical analogue. Place {{CHART_3}} if it exists.
+
+structural_break / harvested_source / decomposition_shift (500–700 words):
+  Hook · <h3>The Concept</h3> · <h3>The Analysis</h3> · <h3>Where We Are Now</h3> · <h3>What to Watch</h3>
+  <h3>The Concept</h3>: what the metric is and how it is constructed — woven naturally. Technical precision over vague summary. If the concept has a clean mathematical definition, state it. Define every FI/macro-specific term inline on first mention.
+  <h3>The Analysis</h3>: the empirical finding with numbers, windows, citation. Place {{CHART_1}} after.
+  <h3>Where We Are Now</h3>: current positioning in historical context. Place {{CHART_2}} then {{CHART_3}}.
+  Terms & Mechanics (optional): macro-specific mechanics the reader likely doesn't know cold — seasonal adjustment, birth-death model, chained dollars, IORB/ON RRP, repo haircuts. Skip basics the reader knows: what a yield is, what a spread is, what basis points are. Format: <ul> with <li> per term — <strong>Term</strong>: one sentence. No Q: prefix. Omit entirely if nothing non-obvious appears. Do NOT use <h3>Terms & Mechanics</h3>.
+
+fomc_event_study (500–700 words):
+  Hook · <h3>The Mechanism</h3> · <h3>The Analysis</h3> · <h3>Where We Are Now</h3> · <h3>What to Watch</h3>
+  <h3>The Mechanism</h3>: how FOMC announcements move rates — the path vs timing decomposition.
+  <h3>The Analysis</h3>: era-by-era results. Place {{CHART_1}} then {{EQUATION}} then {{CHART_2}}.
+  <h3>Where We Are Now</h3>: current cycle context. Place {{CHART_3}} if it exists.
+
+fomc_sep (400–550 words):
+  Hook · <h3>The Dot Plot</h3> · <h3>What Changed</h3> · <h3>What to Watch</h3>
+  <h3>The Dot Plot</h3>: what the SEP dot plot is, how to read it. Place {{CHART_1}} after.
+  <h3>What Changed</h3>: how this meeting differs from the prior SEP. Place {{CHART_2}} after.
+
+all other findings (500–700 words):
+  Hook · <h3>The Concept</h3> · <h3>The Analysis</h3> · <h3>Where We Are Now</h3> · <h3>What to Watch</h3>
+  Placement: {{CHART_1}} after <h3>The Analysis</h3>; {{CHART_2}} then {{CHART_3}} after <h3>Where We Are Now</h3>.
+  Terms & Mechanics (optional): same rules as structural_break above.
+
+Hook rules (all variants): first 1–3 paragraphs, no header tag. Do NOT open with the empirical punchline — the hook sets context, not the conclusion. If anchored to an upcoming release, name it and explain the mechanistic link in one sentence. No generic openers.
 
 CHART PLACEHOLDERS:
 - Emit {{CHART_1}}, {{CHART_2}}, and optionally {{CHART_3}} as standalone lines in body_html at the specified positions above.
 - What each chart shows depends on the finding kind (provided in FINDING RECORD below):
   • correlation_shift / lead_lag_change: {{CHART_1}} = primary series full history; {{CHART_2}} = rolling Spearman correlation over time; {{CHART_3}} = split cross-correlogram (historical vs. recent lag structure).
-  • regime_transition / notable_move_level / notable_move_change: {{CHART_1}} = primary series full history; {{CHART_2}} = rolling percentile rank over time; {{CHART_3}} = full-history distribution histogram with current value marked.
+  • notable_move_level / notable_move_change / spread_extreme: {{CHART_1}} = primary series full history; {{CHART_2}} = full-history distribution histogram with current value marked. No {{CHART_3}} for these kinds.
+  • regime_transition / btp_bund_regime: {{CHART_1}} = primary series full history; {{CHART_2}} = rolling percentile rank over time; {{CHART_3}} = full-history distribution histogram.
   • fomc_event_study: {{CHART_1}} = primary series full history; {{CHART_2}} = era comparison bar chart (path vs timing surprise share, or OLS coefficients, by Fed era). This bar chart is the analytical heart — place {{CHART_2}} immediately after the empirical paragraph that explains the era breakdown.
   • harvested_source / structural_break: {{CHART_1}} = multi-series time plot of all referenced series (z-score normalised if units differ, otherwise raw); {{CHART_2}} = rolling percentile rank of primary series; {{CHART_3}} = full-history distribution histogram.
 - Only emit a placeholder if the chart will genuinely add information not already in the prose. Never emit a placeholder just to fill a slot.
@@ -599,6 +641,9 @@ PROSE RULES:
 - Bullets are allowed anywhere they aid clarity. Required for any Q&A mechanics callouts.
 - Technical depth: do not round off corners. If a mechanism has three steps, explain all three. Do not substitute vague summary language ("it tightens conditions") for the actual chain of causation.
 - Causal chains: when explaining how A leads to B leads to C, write the chain explicitly — name the mechanism at each link. Do not jump from premise to conclusion.
+- Rate/spread changes: express in basis points (bp), not "percentage points." "The 10-year yield rose 25 bp" not "rose 0.25 percentage points."
+- Percentage-point quantities (tariff rates, unemployment changes, survey results, any non-rate percent-denominated quantity): abbreviate as "pp" — never spell out "percentage points" or "percentage point". Write "a 10 pp tariff", "unemployment fell 0.5 pp", not "10 percentage point tariff" or "0.5 percentage points". This preserves the distinction between a proportional change (e.g. "CPI rose 3%") and a level change in a percent-denominated series (e.g. "unemployment rose 0.5 pp").
+- Equity analogies: only use one when it is the clearest entry point to an unfamiliar concept. Never force an analogy for something the reader already knows (unemployment, GDP, inflation). A stretched analogy is more confusing than no analogy. If it requires explaining why the analogy holds, it doesn't hold.
 
 FACTUAL ACCURACY RULES:
 - Use ONLY the numbers from DATA CONTEXT or CONTEXTUAL BACKGROUND DATA provided. Do not invent or estimate numbers.
@@ -636,6 +681,7 @@ Check for:
 10. Key statistics (values, z-scores, %ile ranks, correlations, bp changes) not wrapped in <strong> tags
 11. Terms & Mechanics entries that explain true financial basics the reader knows from equities work (what a yield is, what a spread is, what basis points are, what standard deviation is, basic price-return math) — flag as too obvious. Do NOT flag entries for FI/macro-specific mechanics the reader may not know cold from equities: duration, convexity, repo mechanics, haircuts, SOFR construction, seasonal adjustment, CPI basket methodology, BLS birth-death model, chained-dollar deflation, Fed operational details (IORB, ON RRP, SRF) — these are appropriate and useful for this reader
 12. Terms & Mechanics items using "Q: ..." format instead of bullet list format
+13. "percentage point" or "percentage points" spelled out anywhere in the prose — must be abbreviated "pp". Flag every occurrence of the spelled-out form.
 
 OUTPUT:
 Return ONLY a raw JSON object — no preamble, no reasoning, no bullet lists, no markdown. Start your response with { and end with }.
@@ -643,8 +689,9 @@ Return ONLY a raw JSON object — no preamble, no reasoning, no bullet lists, no
   "flags": ["description of issue 1", "description of issue 2"],
   "approved": true
 }
+CRITICAL OUTPUT RULE: The "flags" array must contain ONLY confirmed problems. If you conclude something is acceptable rounding, fine, or not a violation, omit it entirely — do not include it even to note that you checked. An empty "flags": [] is correct when everything passes.
 Set "approved" to false ONLY if a number in the draft does not match the DATA CONTEXT (wrong value, not a rounding difference).
-All style issues — banned phrases, series IDs in prose, spelling of "percentile", unsupported historical context, σ decimal places — are flags only and NEVER block approval.
+All style issues — banned phrases, series IDs in prose, spelling, σ decimal places — are flags only and NEVER block approval.
 """
 
 _CITATION_SYSTEM = """\
@@ -975,7 +1022,33 @@ def fact_check_draft(
         messages=[{"role": "user", "content": user_content}],
     )
     try:
-        return _extract_json(response.content[0].text)
+        result = _extract_json(response.content[0].text)
+        raw_flags: list[str] = result.get("flags", [])
+        # Strip flags where the model concluded there's no issue (prompt-resistant behaviour).
+        _PASS_PHRASES = (
+            "no violations found", "no series id", "no series ids", "no fred",
+            "acceptable rounding", "this is actually correct", "does not qualify",
+            "no flag needed", "withdrawing", "no issue", "not a violation",
+            "found no issue", "no banned", "none of the", "not one of",
+            "appear to be used", "appear in the prose", "no flags",
+            "not present", "is appropriate", "no flag.", "it is not a",
+            "so it is not", "does not appear", "not a generic",
+            "retracted", "— acceptable", "none found beyond", "rounds correctly to",
+        )
+        cleaned = [
+            f for f in raw_flags
+            if not any(p in f.lower() for p in _PASS_PHRASES)
+        ]
+        # Deduplicate — model occasionally emits the same issue twice.
+        seen: set[str] = set()
+        deduped: list[str] = []
+        for f in cleaned:
+            key = f[:80]
+            if key not in seen:
+                seen.add(key)
+                deduped.append(f)
+        result["flags"] = deduped
+        return result
     except (ValueError, json.JSONDecodeError) as e:
         logger.warning("Fact-check parse error: %s", e)
         return {"flags": ["Fact-check response could not be parsed"], "approved": True}
@@ -1421,9 +1494,14 @@ def _chart3_split_correlogram(
 
 
 def _chart3_distribution(
-    finding: "Finding", ctx: "dict[str, SeriesSnapshot]", chart_dir: Path, slug_short: str, today: date
+    finding: "Finding", ctx: "dict[str, SeriesSnapshot]", chart_dir: Path, slug_short: str, today: date,
+    chart_n: int = 3,
 ) -> "Path | None":
-    """Full-history distribution histogram with current value marked."""
+    """Full-history distribution histogram with current value marked.
+
+    chart_n controls the output filename and log label — pass 2 when using this
+    as chart 2 (e.g. for notable_move findings where distribution replaces rolling percentile).
+    """
     import matplotlib.pyplot as plt
     from src.analytics.charts import distribution, save_to, add_source_footer
     sid1 = list(finding.series_ids)[0]
@@ -1444,13 +1522,13 @@ def _chart3_distribution(
             xlabel=str(meta.get("units", "")),
         )
         add_source_footer(fig, [sid1], today)
-        out = chart_dir / f"{today.isoformat()}_{slug_short}_chart3.png"
+        out = chart_dir / f"{today.isoformat()}_{slug_short}_chart{chart_n}.png"
         save_to(fig, out)
         plt.close(fig)
-        logger.info("Chart 3 (distribution) saved: %s", out)
+        logger.info("Chart %d (distribution) saved: %s", chart_n, out)
         return out
     except Exception as e:
-        logger.warning("Chart 3 (distribution) failed: %s", e)
+        logger.warning("Chart %d (distribution) failed: %s", chart_n, e)
         return None
 
 
@@ -1677,7 +1755,11 @@ def generate_charts(
     if finding.kind in {"correlation_shift", "lead_lag_change"} and len(finding.series_ids) >= 2:
         p = _chart2_rolling_corr(finding, chart_dir, slug_short, today)
         if p: paths.append(p)
-    elif finding.kind in {"notable_move_level", "notable_move_change", "regime_transition"}:
+    elif finding.kind in {"notable_move_level", "notable_move_change", "spread_extreme"}:
+        # Distribution is more immediately readable than rolling percentile for single-series extremes.
+        p = _chart3_distribution(finding, ctx, chart_dir, slug_short, today, chart_n=2)
+        if p: paths.append(p)
+    elif finding.kind in {"regime_transition", "btp_bund_regime"}:
         p = _chart2_rolling_percentile(finding, chart_dir, slug_short, today)
         if p: paths.append(p)
 
@@ -1685,9 +1767,10 @@ def generate_charts(
     if finding.kind == "lead_lag_change" and len(finding.series_ids) >= 2:
         p = _chart3_split_correlogram(finding, chart_dir, slug_short, today)
         if p: paths.append(p)
-    elif finding.kind in {"notable_move_level", "notable_move_change", "regime_transition", "structural_break"}:
+    elif finding.kind in {"regime_transition", "btp_bund_regime", "structural_break"}:
         p = _chart3_distribution(finding, ctx, chart_dir, slug_short, today)
         if p: paths.append(p)
+    # notable_move_level / notable_move_change: no chart 3 — distribution is already chart 2
 
     # harvested_source: upgrade chart 1 to multi-series, then fill chart 2 + 3
     if finding.kind == "harvested_source" and len(finding.series_ids) >= 2:
@@ -1850,6 +1933,48 @@ class ComposedEmail:
     citation_count: int = 0
 
 
+# ---------- bolding pass ----------
+
+_BOLDING_SYSTEM = """\
+You are editing a macro finance email to ensure all key statistics are wrapped in <strong> tags.
+
+Wrap in <strong>: numeric values with units (e.g. "4.30%", "$977 billion", "25 bp", "10 pp"),
+z-scores (e.g. "−0.2σ"), %ile ranks (e.g. "52nd %ile"), correlations (e.g. "−53%"),
+rate/spread changes (e.g. "+25 bp", "−50 bp"), and any other metric value cited as evidence.
+
+Do NOT bold: prose words, section headers, text already in <strong> tags, text inside <a> tags,
+or terms in Terms & Mechanics definitions.
+
+Preserve ALL {{CHART_N}} and {{EQUATION}} placeholders exactly as-is.
+Do not change any prose, structure, citations, or HTML tags other than adding <strong> wrappers.
+
+OUTPUT FORMAT (raw JSON, no code fence):
+{"body_html": "...", "body_text": "..."}
+"""
+
+
+def apply_bold_stats(draft: dict) -> dict:
+    """Targeted pass to wrap all key statistics in <strong> tags."""
+    client = _client()
+    user_content = (
+        f"BODY HTML:\n{draft['body_html']}\n\n"
+        f"BODY TEXT:\n{draft.get('body_text', '')}\n\n"
+        "Wrap all key statistics in <strong> tags as instructed. Return JSON."
+    )
+    response = client.messages.create(
+        model=MODEL,
+        max_tokens=4096,
+        system=[{"type": "text", "text": _BOLDING_SYSTEM, "cache_control": {"type": "ephemeral"}}],
+        messages=[{"role": "user", "content": user_content}],
+    )
+    try:
+        revised = _extract_json(response.content[0].text)
+        return {**draft, **revised}
+    except (ValueError, json.JSONDecodeError) as e:
+        logger.warning("Bolding pass parse error: %s — returning original draft", e)
+        return draft
+
+
 # ---------- main entry point ----------
 
 def compose_email(pick: LessonPick, today: date | None = None) -> ComposedEmail:
@@ -1880,9 +2005,21 @@ def compose_email(pick: LessonPick, today: date | None = None) -> ComposedEmail:
     if flags:
         logger.info("Fact-check flags (%d): %s", len(flags), "; ".join(flags))
 
+    # If factcheck caught unbolded stats, apply a targeted bolding pass before citation revision.
+    if any("<strong>" in f for f in flags):
+        draft = apply_bold_stats(draft)
+        logger.info("Bolding pass applied")
+
     # Web-search citation pass: find primary sources for mechanistic claims
     citation_result = citation_check_draft(draft, pick, inferred_ctx=inferred_ctx)
-    citation_count = len(citation_result.get("citations", []))
+    # Deduplicate by URL — same paper cited for multiple claim excerpts produces duplicate references.
+    seen_urls: set[str] = set()
+    deduped_citations = [
+        c for c in citation_result.get("citations", [])
+        if c.get("url") not in seen_urls and not seen_urls.add(c.get("url", ""))  # type: ignore[func-returns-value]
+    ]
+    citation_result = {**citation_result, "citations": deduped_citations}
+    citation_count = len(deduped_citations)
     if citation_count:
         draft = revise_with_citations(draft, citation_result)
         logger.info("Citations added: %d", citation_count)
