@@ -38,7 +38,7 @@ from src.ingest.ecb_release_calendar import refresh_cb_calendar
 from src.ingest.sep_client import SepClient
 from src.ingest.ecb_update import run_ecb_refresh
 from src.ingest.fred_client import FredClient
-from src.ingest.paths import DISCOVERY_PATH, METADATA_PATH
+from src.ingest.paths import DISCOVERY_PATH, METADATA_PATH, RELEASE_CALENDAR_PATH
 from src.ingest.release_calendar import refresh_release_calendar, refresh_release_series
 from src.ingest.storage import load_parquet, save_parquet_atomic
 from src.ingest.update import refresh_series, refresh_universe
@@ -108,13 +108,23 @@ def main() -> int:
     with RunLogger("refresh_data") as run:
         client = FredClient()
 
-        # --- release calendar (cheap; do first so it's independent of refresh success) ---
+        # --- release calendar ---
         if args.release_calendar:
-            cal = refresh_release_calendar(client)
+            try:
+                cal = refresh_release_calendar(client)
+                run.set("calendar_updated", True)
+            except Exception as cal_err:
+                # Keep existing calendar if the broad releases/dates fetch fails (FRED flakiness).
+                # Still attempt release_series refresh using whatever release IDs we have stored.
+                logger.warning("release calendar fetch failed (%s) — using existing data", cal_err)
+                existing_cal = load_parquet(RELEASE_CALENDAR_PATH)
+                cal = existing_cal if existing_cal is not None else pd.DataFrame(columns=["release_id"])
+                run.set("calendar_updated", False)
+                run.set("calendar_error", str(cal_err))
+                exit_code = 1
             release_ids = sorted({int(r) for r in cal["release_id"].unique()}) if not cal.empty else []
             if release_ids:
                 refresh_release_series(client, release_ids)
-            run.set("calendar_updated", True)
             run.set("release_count", len(release_ids))
 
         # Always merge static G7+ central bank calendar dates (fast, no network call).

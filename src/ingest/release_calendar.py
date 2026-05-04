@@ -21,10 +21,10 @@ from .fred_client import FredClient
 from .paths import RELEASE_CALENDAR_PATH, RELEASE_SERIES_PATH, ensure_dirs
 from .storage import save_parquet_atomic
 
-# Default window: enough past context to see recent releases and enough
-# future to drive the email's "what to watch" section.
-DEFAULT_PAST_DAYS = 60
-DEFAULT_FUTURE_DAYS = 120
+# Window sized to the email's actual needs: selector looks 2 days ahead,
+# composer table shows 10 days ahead. Past context not needed at all.
+DEFAULT_PAST_DAYS = 1
+DEFAULT_FUTURE_DAYS = 14
 
 logger = logging.getLogger(__name__)
 
