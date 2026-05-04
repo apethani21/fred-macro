@@ -70,15 +70,15 @@ _SNAPSHOT_SERIES: list = [
     ("BAMLC0A0CM",   "IG OAS",  "spread_bp"),
     ("BAMLH0A0HYM2", "HY OAS",  "spread_bp"),
     ("__section__", "G10 FX"),
-    ("DTWEXBGS",  "USD broad",  "plain_2"),
-    ("DEXUSEU",   "EUR/USD",    "fx_4"),
-    ("DEXJPUS",   "USD/JPY",    "plain_1"),
-    ("DEXUSUK",   "GBP/USD",    "fx_4"),
-    ("DEXUSAL",   "AUD/USD",    "fx_4"),
+    ("YF:DX-Y.NYB",  "DXY",     "plain_2"),
+    ("YF:EURUSD=X",  "EUR/USD",  "fx_4"),
+    ("YF:JPY=X",     "USD/JPY",  "plain_1"),
+    ("YF:GBPUSD=X",  "GBP/USD",  "fx_4"),
+    ("YF:AUDUSD=X",  "AUD/USD",  "fx_4"),
     ("__section__", "COMMODITIES & VOL"),
-    ("YF:CL=F",          "WTI",   "dollar_1"),
+    ("YF:CL=F",   "WTI",  "dollar_1"),
     # GOLDAMGBD228NLBM (LBMA gold fix) discontinued on FRED — ICE/IBA moved to paywall.
-    ("VIXCLS",           "VIX",   "plain_1"),
+    ("YF:^VIX",   "VIX",  "plain_1"),
 ]
 
 _SNAPSHOT_GLOSSARY = (
@@ -88,7 +88,8 @@ _SNAPSHOT_GLOSSARY = (
     "IG/HY = investment/high-yield grade · "
     "DFR = ECB deposit facility rate · €STR = euro short-term rate (ECB overnight) · "
     "EA AAA = euro-area AAA sovereign yield curve · BTP-Bund = Italy−Germany 10Y spread · "
-    "Bund slope = EA AAA 10Y−2Y · USD broad = trade-weighted dollar"
+    "Bund slope = EA AAA 10Y−2Y · "
+    "DXY = ICE 6-currency USD index (≠ Fed broad trade-weighted)"
 )
 
 
