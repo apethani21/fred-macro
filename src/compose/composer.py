@@ -17,6 +17,7 @@ import logging
 import os
 import re
 import time
+import warnings
 from dataclasses import dataclass, field
 from datetime import date
 from pathlib import Path
@@ -75,7 +76,7 @@ _SNAPSHOT_SERIES: list = [
     ("DEXUSUK",   "GBP/USD",    "fx_4"),
     ("DEXUSAL",   "AUD/USD",    "fx_4"),
     ("__section__", "COMMODITIES & VOL"),
-    ("DCOILWTICO",       "WTI",   "dollar_1"),
+    ("YF:CL=F",          "WTI",   "dollar_1"),
     # GOLDAMGBD228NLBM (LBMA gold fix) discontinued on FRED — ICE/IBA moved to paywall.
     ("VIXCLS",           "VIX",   "plain_1"),
 ]
@@ -225,6 +226,21 @@ def _validate_row(fred_id: str, label: str, kind: str, level: float, chgs: dict)
 
 _DAILY_FREQS = {"D", "BW", "W"}  # frequencies with meaningful intraday/intraweek changes
 
+_yf_cache: dict[str, pd.Series] = {}
+
+def _yf_load_series(ticker: str) -> pd.Series:
+    """Fetch daily closing prices from Yahoo Finance (in-memory cached per run)."""
+    if ticker not in _yf_cache:
+        import yfinance as yf  # noqa: PLC0415
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore")
+            raw = yf.download(ticker, period="5y", progress=False)["Close"]
+        s = raw.squeeze().rename(ticker)
+        s.index = pd.to_datetime(s.index).normalize()
+        _yf_cache[ticker] = s.dropna()
+    return _yf_cache[ticker]
+
+
 def _build_rows(series_list: list) -> list[dict]:
     lb1y = 252
     lb5y = 252 * 5
@@ -233,17 +249,21 @@ def _build_rows(series_list: list) -> list[dict]:
         if entry[0] == "__section__":
             rows.append({"__section__": entry[1]})
             continue
-        fred_id, label, kind = entry
+        series_id, label, kind = entry
         try:
-            s = load_series(fred_id).dropna()
+            if series_id.startswith("YF:"):
+                s = _yf_load_series(series_id[3:]).dropna()
+                is_daily = True
+            else:
+                s = load_series(series_id).dropna()
+                meta = series_metadata(series_id)
+                is_daily = (meta is None) or (str(meta.get("frequency_short", "D")).upper() in _DAILY_FREQS)
             if s.empty:
                 continue
             cur = float(s.iloc[-1])
-            meta = series_metadata(fred_id)
-            is_daily = (meta is None) or (str(meta.get("frequency_short", "D")).upper() in _DAILY_FREQS)
             if is_daily:
                 chgs = _compute_changes(s)
-                _validate_row(fred_id, label, kind, cur, chgs)
+                _validate_row(series_id, label, kind, cur, chgs)
             else:
                 chgs = {}  # suppress 1D/1W/1M columns for monthly/quarterly series
             rows.append({
@@ -953,10 +973,14 @@ def draft_email(
     pick: LessonPick,
     ctx: dict[str, SeriesSnapshot],
     inferred_ctx: "dict[str, SeriesSnapshot] | None" = None,
+    _prior_draft_html: "str | None" = None,
 ) -> dict:
     """Call Claude to produce subject + HTML/text body.
 
     Returns dict with keys: subject, body_html, body_text.
+
+    _prior_draft_html: if set, a previous draft was structurally incomplete (only a hook);
+    the call becomes a correction turn asking for the full email.
     """
     client = _client()
     finding = pick.finding
@@ -988,11 +1012,30 @@ def draft_email(
         )
     user_content += "Write the daily macro education email. Return only the JSON object."
 
+    messages: list[dict] = [{"role": "user", "content": user_content}]
+
+    if _prior_draft_html is not None:
+        # Correction turn: the previous response was parsed as structurally incomplete
+        # (body_html had no <h3> section headers). Ask for a complete redraft.
+        messages.append({"role": "assistant", "content": _prior_draft_html})
+        messages.append({
+            "role": "user",
+            "content": (
+                "Your previous response was only the opening hook paragraph — the body_html "
+                "contained no <h3> section headers at all. "
+                "Please write the COMPLETE email following the full structure required by your "
+                "instructions for this finding kind. "
+                "The email must contain the hook plus all required <h3> sections "
+                "(e.g. The Concept, The Analysis, Where We Are Now, What to Watch). "
+                "Return only the JSON object."
+            ),
+        })
+
     response = client.messages.create(
         model=MODEL,
-        max_tokens=4096,
+        max_tokens=8096,
         system=[{"type": "text", "text": _DRAFT_SYSTEM, "cache_control": {"type": "ephemeral"}}],
-        messages=[{"role": "user", "content": user_content}],
+        messages=messages,
     )
     raw = response.content[0].text
     return _extract_json(raw)
@@ -2046,6 +2089,31 @@ def compose_email(pick: LessonPick, today: date | None = None) -> ComposedEmail:
             inferred_ctx = _build_series_snapshots(inferred_ids)
 
     draft = draft_email(pick, ctx, inferred_ctx=inferred_ctx)
+
+    # Guard: if body_html has no <h3> section headers the draft is structurally incomplete —
+    # the LLM likely produced only the hook due to a JSON serialization failure mid-body.
+    # Retry once, passing the broken raw response back as a correction turn.
+    _SECTIONS_REQUIRED_FOR_KINDS = {
+        "harvested_source", "structural_break", "correlation_shift", "regime_transition",
+        "notable_move_level", "notable_move_change", "spread_extreme", "fomc_event_study",
+        "fomc_sep", "lead_lag_change", "decomposition_shift", "cross_asset_factor",
+    }
+    if (
+        pick.finding.kind in _SECTIONS_REQUIRED_FOR_KINDS
+        and "<h3>" not in draft.get("body_html", "")
+    ):
+        logger.warning(
+            "Draft for %s [%s] has no <h3> sections — likely JSON parse failure. Retrying.",
+            pick.finding.slug, pick.finding.kind,
+        )
+        draft = draft_email(pick, ctx, inferred_ctx=inferred_ctx,
+                            _prior_draft_html=draft.get("body_html", ""))
+        if "<h3>" not in draft.get("body_html", ""):
+            logger.error(
+                "Retry draft for %s also has no <h3> sections — proceeding with incomplete draft.",
+                pick.finding.slug,
+            )
+
     fc = fact_check_draft(draft, pick, ctx, inferred_ctx=inferred_ctx)
 
     flags = fc.get("flags", [])
