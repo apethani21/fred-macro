@@ -42,6 +42,7 @@ from src.ingest.paths import DISCOVERY_PATH, METADATA_PATH
 from src.ingest.release_calendar import refresh_release_calendar, refresh_release_series
 from src.ingest.storage import load_parquet, save_parquet_atomic
 from src.ingest.update import refresh_series, refresh_universe
+from src.ingest.yfinance_update import run_yf_refresh
 from src.monitor.health import build_health_snapshot
 from src.monitor.run_log import RunLogger
 
@@ -99,6 +100,7 @@ def main() -> int:
     parser.add_argument("--ecb", action="store_true", help="Refresh ECB SDW series (deposit rate, HICP, yield curve, M3, wages, etc.).")
     parser.add_argument("--release-calendar", action="store_true", help="Also refresh the release calendar.")
     parser.add_argument("--sep", action="store_true", help="Refresh FOMC SEP dot-plot data (sep_dots.parquet).")
+    parser.add_argument("--yfinance", action="store_true", help="Refresh Yahoo Finance series (FX, VIX, WTI, DXY) into daily.parquet.")
     parser.add_argument("--skip-refresh", action="store_true", help="Run discovery/calendar but don't refresh series data.")
     args = parser.parse_args()
 
@@ -126,50 +128,70 @@ def main() -> int:
             print(f"[SEP] {sep_meetings} meetings stored")
             run.set("sep_meetings", sep_meetings)
 
+        # --- yfinance refresh (FX, VIX, WTI, DXY) — no FRED dependency ---
+        if args.yfinance:
+            yf_counts = run_yf_refresh()
+            yf_ok = sum(1 for n in yf_counts.values() if n > 0)
+            yf_errors = len(yf_counts) - yf_ok
+            print(f"[yfinance] {yf_ok} ok, {yf_errors} errors")
+            run.set("yf_series_ok", yf_ok)
+            run.set("yf_series_errors", yf_errors)
+            if yf_errors:
+                exit_code = 1
+
+        # Skip FRED refresh if no FRED-specific flags were given (e.g. --yfinance-only run).
+        _fred_requested = args.series or args.discover or (
+            not args.yfinance and not args.ecb and not args.sep and not args.release_calendar
+        )
+
         # --- determine universe ---
-        if args.series:
-            universe = {args.partition: list(args.series)}
-        elif args.discover:
-            universe = _run_discovery(client, args)
+        if _fred_requested:
+            if args.series:
+                universe = {args.partition: list(args.series)}
+            elif args.discover:
+                universe = _run_discovery(client, args)
+            else:
+                universe = _universe_from_metadata()
+                if not universe:
+                    print("No universe found. Run with --discover first, or pass --series explicitly.")
+                    exit_code = 1 if not args.release_calendar else 0
+                    run.set("exit_code", exit_code)
+                    build_health_snapshot()
+                    return exit_code
         else:
-            universe = _universe_from_metadata()
-            if not universe:
-                print("No universe found. Run with --discover first, or pass --series explicitly.")
-                exit_code = 1 if not args.release_calendar else 0
-                run.set("exit_code", exit_code)
-                build_health_snapshot()
-                return exit_code
+            universe = {}
 
         if args.skip_refresh:
             build_health_snapshot()
             return 0
 
-        # --- refresh ---
-        if args.series:
-            summary = refresh_series(args.series, client, partition=args.partition)
-            print(f"Refreshed {len(summary.per_series)} series [{args.partition}]:")
-            print(summary.report())
-            errs = len(summary.errors)
-            run.set("series_ok", len(summary.per_series) - errs)
-            run.set("series_errors", errs)
-            exit_code = 1 if summary.errors else 0
-        else:
-            results = refresh_universe(universe, client)
-            total_errors = 0
-            total_ok = 0
-            for partition, summary in results.items():
+        # --- FRED refresh ---
+        if universe:
+            if args.series:
+                summary = refresh_series(args.series, client, partition=args.partition)
+                print(f"Refreshed {len(summary.per_series)} series [{args.partition}]:")
+                print(summary.report())
                 errs = len(summary.errors)
-                ok = len(summary.per_series) - errs
-                total_errors += errs
-                total_ok += ok
-                print(f"[{partition}] {ok} ok, {errs} errors")
-                if errs:
-                    for r in summary.errors:
-                        print(f"    {r.series_id}: {r.error}")
-            run.set("series_ok", total_ok)
-            run.set("series_errors", total_errors)
-            run.set("partitions", len(results))
-            exit_code = 1 if total_errors else 0
+                run.set("series_ok", len(summary.per_series) - errs)
+                run.set("series_errors", errs)
+                exit_code = 1 if summary.errors else 0
+            else:
+                results = refresh_universe(universe, client)
+                total_errors = 0
+                total_ok = 0
+                for partition, summary in results.items():
+                    errs = len(summary.errors)
+                    ok = len(summary.per_series) - errs
+                    total_errors += errs
+                    total_ok += ok
+                    print(f"[{partition}] {ok} ok, {errs} errors")
+                    if errs:
+                        for r in summary.errors:
+                            print(f"    {r.series_id}: {r.error}")
+                run.set("series_ok", total_ok)
+                run.set("series_errors", total_errors)
+                run.set("partitions", len(results))
+                exit_code = 1 if total_errors else 0
 
         # --- ECB refresh ---
         if args.ecb:
