@@ -45,11 +45,11 @@ import math as _math
 
 _SNAPSHOT_SERIES: list = [
     ("__section__", "US RATES"),
-    ("DTB3",   "3M T-Bill",   "rate_pct"),
-    ("DGS2",   "2Y UST",      "rate_pct"),
-    ("DGS5",   "5Y UST",      "rate_pct"),
-    ("DGS10",  "10Y UST",     "rate_pct"),
-    ("DGS30",  "30Y UST",     "rate_pct"),
+    ("YF:^IRX", "3M T-Bill",  "rate_pct"),
+    ("DGS2",    "2Y UST",     "rate_pct"),
+    ("YF:^FVX", "5Y UST",     "rate_pct"),
+    ("YF:^TNX", "10Y UST",    "rate_pct"),
+    ("YF:^TYX", "30Y UST",    "rate_pct"),
     ("__section__", "SPREADS / INFLATION"),
     ("T10Y2Y",  "2s10s",       "spread_bp"),
     ("T10Y3M",  "3M10Y",       "spread_bp"),

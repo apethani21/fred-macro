@@ -20,6 +20,26 @@ logger = logging.getLogger(__name__)
 
 # Registry of tickers to maintain. series_id in parquet = ticker string.
 YF_SERIES: dict[str, dict] = {
+    "^IRX": {
+        "title": "US 3-Month Treasury Bill Yield",
+        "units": "Percent",
+        "units_short": "%",
+    },
+    "^FVX": {
+        "title": "US 5-Year Treasury Yield",
+        "units": "Percent",
+        "units_short": "%",
+    },
+    "^TNX": {
+        "title": "US 10-Year Treasury Yield",
+        "units": "Percent",
+        "units_short": "%",
+    },
+    "^TYX": {
+        "title": "US 30-Year Treasury Yield",
+        "units": "Percent",
+        "units_short": "%",
+    },
     "CL=F": {
         "title": "WTI Crude Oil - Front Month Futures (NYMEX)",
         "units": "Dollars per Barrel",
