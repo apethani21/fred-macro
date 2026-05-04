@@ -26,8 +26,8 @@ FRED_MACRO_DIR=/home/ubuntu/fred-macro
 
 # --- Monthly/major-release refresh: 14:30 UTC weekdays ---
 # Runs after the typical US morning release window (8:30 ET = 13:30 UTC).
-# Re-runs discovery to pick up any new series from major releases.
-30 14 * * 1-5 cd $FRED_MACRO_DIR && python scripts/refresh_data.py --discover >> logs/refresh_data.log 2>&1
+# Re-runs discovery and refreshes the release calendar + series mapping.
+30 14 * * 1-5 cd $FRED_MACRO_DIR && python scripts/refresh_data.py --discover --release-calendar >> logs/refresh_data.log 2>&1
 
 # --- Research phase: 22:00 UTC daily ---
 # After US market close. Detects new findings, enriches sources.
