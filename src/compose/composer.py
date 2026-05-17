@@ -669,7 +669,7 @@ EQUATION PLACEHOLDER:
 TABLES:
 - Use an HTML table (<table>, <tr>, <th>, <td>) when presenting 3+ data points that share a common structure (e.g., percentile readings across lookback windows, regime durations, correlation values at multiple lags).
 - Tables replace the prose enumeration of numbers — do not repeat table contents in surrounding prose.
-- Keep tables narrow: 2–4 columns maximum. Do not add inline styles — the email stylesheet handles table formatting.
+- Keep tables narrow: 2–4 columns maximum. Do not add inline styles to table elements — styling is applied in post-processing.
 - Bold key cells where a value is the point of the row (e.g., the current reading in a historical comparison table).
 
 DIAGRAMS:
@@ -1967,6 +1967,28 @@ _HTML_TEMPLATE = """\
 _CHART_DIV = '<div style="margin:24px 0;"><img src="{src}" style="max-width:100%; height:auto;" alt="Chart {n}"></div>'
 _EQUATION_DIV = '<div style="margin:16px auto; text-align:center;"><img src="{src}" style="max-height:48px; height:auto;" alt="Regression equation"></div>'
 
+_BODY_TABLE_STYLE = "border-collapse:collapse;width:100%;margin:14px 0;font-family:Helvetica,Arial,sans-serif;font-size:12px;"
+_BODY_TH_STYLE    = "background:#111;color:#fff;font-size:10px;font-weight:600;padding:6px 10px;text-align:left;white-space:nowrap;"
+_BODY_TD_STYLE    = "padding:6px 10px;border-bottom:1px solid #e5e7eb;vertical-align:top;"
+
+
+def _style_body_tables(html: str) -> str:
+    """Inject inline styles into bare <table>/<th>/<td> tags in LLM-generated body HTML.
+
+    The snapshot and release calendar tables already carry full inline styles; this
+    function only touches tags that have no style= attribute yet.
+    """
+    def _inject(style: str, m: re.Match) -> str:
+        tag = m.group(0)
+        if "style=" in tag:
+            return tag
+        return tag[:-1] + f' style="{style}">'
+
+    html = re.sub(r"<table\b[^>]*>", lambda m: _inject(_BODY_TABLE_STYLE, m), html)
+    html = re.sub(r"<th\b[^>]*>",    lambda m: _inject(_BODY_TH_STYLE, m), html)
+    html = re.sub(r"<td\b[^>]*>",    lambda m: _inject(_BODY_TD_STYLE, m), html)
+    return html
+
 
 def render_html(
     subject: str,
@@ -2020,6 +2042,9 @@ def render_html(
             _EQUATION_DIV.format(src=f"data:image/png;base64,{data}"),
         )
     body_html = body_html.replace("{{EQUATION}}", "")  # strip if unused
+
+    # Style bare table elements in the LLM-generated body before assembly
+    body_html = _style_body_tables(body_html)
 
     # Append market snapshot + release calendar below the body
     tables_html = ""
