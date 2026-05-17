@@ -465,20 +465,31 @@ def enrich_seeds(
     return enriched
 
 
+# Only findings derived from external sources benefit from enrichment. Statistically-detected
+# findings (correlation shifts, regime transitions, notable moves, etc.) are derived from our
+# own parquet data — no pre-existing citation exists for a pattern we detected ourselves.
+_ENRICHABLE_KINDS = {"harvested_source"}
+
+
 def enrich_all(
     findings_path: Path,
     dry_run: bool = False,
     slug_filter: str | None = None,
     skip_sourced: bool = True,
 ) -> int:
-    """Enrich all (or filtered) findings in findings.md that lack sources.
+    """Enrich findings in findings.md that lack sources.
 
+    Only enriches finding kinds in _ENRICHABLE_KINDS — statistically-detected
+    findings are skipped since no pre-existing citation can source them.
     Returns count of findings enriched.
     """
     findings = read_findings_md(findings_path)
     enriched = 0
 
     for f in findings:
+        if f.kind not in _ENRICHABLE_KINDS:
+            logger.debug("Skipping %s (kind=%s not enrichable)", f.slug, f.kind)
+            continue
         if slug_filter and slug_filter not in f.slug:
             continue
         if skip_sourced and f.sources:
