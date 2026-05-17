@@ -179,8 +179,7 @@ def _merge_with_revisions(
     # Prefer incoming rows on overlap: append incoming after existing-minus-overlap
     existing_kept = existing_for_series[~existing_for_series["date"].isin(incoming_dates)]
     merged = pd.concat([existing_kept, incoming], ignore_index=True)
-    # Normalize to Timestamp — ECB supplies datetime.date; FRED parquet stores Timestamps.
-    merged["date"] = pd.to_datetime(merged["date"])
+    merged["date"] = pd.to_datetime(merged["date"])  # defensive: normalise any datetime.date to Timestamp
     merged = merged.sort_values("date").reset_index(drop=True)
     return merged, rows_added, rows_changed
 

@@ -78,7 +78,7 @@ def _observations_to_df(series_id: str, observations: list[dict]) -> pd.DataFram
     if not observations:
         return pd.DataFrame(columns=["series_id", "date", "value"])
     df = pd.DataFrame(observations)
-    df["date"] = pd.to_datetime(df["date"]).dt.date
+    df["date"] = pd.to_datetime(df["date"])
     df["value"] = pd.to_numeric(df["value"], errors="coerce")
     df["series_id"] = series_id
     return df[["series_id", "date", "value"]].copy()
@@ -132,7 +132,7 @@ def _compute_derived(
     out = result.reset_index()
     out.columns = ["date", "value"]
     out["series_id"] = spec.series_id
-    out["date"] = pd.to_datetime(out["date"]).dt.date
+    out["date"] = pd.to_datetime(out["date"])
     return out[["series_id", "date", "value"]].copy()
 
 
