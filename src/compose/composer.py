@@ -2125,8 +2125,14 @@ def compose_email(pick: LessonPick, today: date | None = None) -> ComposedEmail:
         flags = [f for f in flags if "<strong>" not in f]
         logger.info("Bolding pass applied")
 
-    # Web-search citation pass: find primary sources for mechanistic claims
-    citation_result = citation_check_draft(draft, pick, inferred_ctx=inferred_ctx)
+    # Web-search citation pass: find primary sources for mechanistic claims.
+    # Skip for data-observation kinds — they contain no causal claims to source.
+    _CITATION_SKIP_KINDS = {"notable_move_level", "notable_move_change", "spread_extreme", "fomc_sep"}
+    if pick.finding.kind in _CITATION_SKIP_KINDS:
+        logger.info("Citation check skipped for kind=%s (no mechanistic claims)", pick.finding.kind)
+        citation_result = {"citations": [], "unsourced": []}
+    else:
+        citation_result = citation_check_draft(draft, pick, inferred_ctx=inferred_ctx)
     # Deduplicate by URL — same paper cited for multiple claim excerpts produces duplicate references.
     seen_urls: set[str] = set()
     deduped_citations = [
