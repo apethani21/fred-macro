@@ -12,6 +12,6 @@ __pycache__/
 # Project-local, not synced across environments
 CLAUDE.md
 data/
-knowledge/
+/knowledge/
 state/
 prompts/
