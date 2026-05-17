@@ -22,16 +22,31 @@ from src.research.seeds import TopicSeed, read_seeds, mark_seed_used, expire_old
 logger = logging.getLogger(__name__)
 
 LESSON_HISTORY_PATH = STATE_DIR / "lesson_history.jsonl"
+FEEDBACK_PATH = STATE_DIR / "feedback.jsonl"
 
 # Lower number = higher priority.
 _KIND_PRIORITY: dict[str, int] = {
-    "notable_move_level": 0,
-    "correlation_shift": 1,
-    "cointegration_break": 2,
-    "regime_transition": 3,
-    "lead_lag_change": 4,
-    "notable_move_change": 5,
+    "harvested_source": 0,       # richest: institutional research with mechanism + citations
+    "correlation_shift": 1,      # non-obvious relationship change
+    "cointegration_break": 2,    # structural break in a paired relationship
+    "regime_transition": 3,      # regime change in a single series
+    "lead_lag_change": 4,        # relationship timing shift
+    "structural_break": 5,       # mean shift
+    "fomc_event_study": 6,       # FOMC analysis
+    "fomc_sep": 7,               # dot plot (timely but mechanical)
+    "notable_move_change": 8,    # rate-of-change notable
+    "spread_extreme": 9,         # spread extreme
+    "notable_move_level": 10,    # pure data point — decays fast, lowest priority
 }
+
+# Data-point findings (level/change/spread) expire quickly — they're meaningless
+# once the moment has passed.
+_DATA_POINT_KINDS = {"notable_move_level", "notable_move_change", "spread_extreme"}
+_DATA_POINT_EXPIRY_DAYS = 14
+
+# /more feedback: series bypass the normal cooldown for this many days so
+# related findings can surface sooner.
+_MORE_WINDOW_DAYS = 7
 
 # Release name substrings that identify genuine discrete scheduled events.
 # Continuous daily FRED feeds (H.15, Federal Funds Data, SOFR, etc.) are
@@ -99,6 +114,9 @@ def pick_lesson(today: date | None = None, lookback_days: int = 14) -> LessonPic
         raise ValueError("findings.md is empty. Run scripts/run_research.py first.")
 
     recent_slugs, recent_series = _load_recent_history(lookback_days)
+    # /more feedback: remove those series from the cooldown set so related
+    # findings can surface again sooner.
+    recent_series = recent_series - _load_more_series()
 
     # Slug-level dedup: exclude recently-taught slugs.
     # Series-level dedup: also exclude findings whose primary series was taught
@@ -108,6 +126,8 @@ def pick_lesson(today: date | None = None, lookback_days: int = 14) -> LessonPic
         if f.slug in recent_slugs:
             return False
         if any(s in recent_series for s in f.series_ids):
+            return False
+        if f.kind in _DATA_POINT_KINDS and (today - f.discovered).days > _DATA_POINT_EXPIRY_DAYS:
             return False
         return True
 
@@ -174,6 +194,7 @@ def pick_seed(today: date | None = None, lookback_days: int = 14) -> TopicSeed |
 
     today_str = today.isoformat()
     _, recent_series = _load_recent_history(lookback_days)
+    recent_series = recent_series - _load_more_series()
 
     eligible = [
         s for s in seeds
@@ -231,6 +252,29 @@ def _load_recent_history(days: int) -> tuple[set[str], set[str]]:
         except (json.JSONDecodeError, KeyError):
             pass
     return slugs, series
+
+
+def _load_more_series() -> set[str]:
+    """Return series IDs the user asked for more of (still within the /more window).
+
+    These are removed from the recent_series cooldown set so related findings
+    can surface sooner than the standard 14-day blackout.
+    """
+    if not FEEDBACK_PATH.exists():
+        return set()
+    cutoff = (date.today() - timedelta(days=_MORE_WINDOW_DAYS)).isoformat()
+    more_series: set[str] = set()
+    for line in FEEDBACK_PATH.read_text().splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            entry = json.loads(line)
+            if entry.get("rating") == "more" and entry.get("date", "") >= cutoff:
+                more_series.update(entry.get("series_ids", []))
+        except (json.JSONDecodeError, KeyError):
+            pass
+    return more_series
 
 
 def _rank(findings: list[Finding]) -> list[Finding]:

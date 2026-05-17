@@ -30,6 +30,8 @@ logger = logging.getLogger(__name__)
 
 TELEGRAM_BASE = "https://api.telegram.org/bot{token}/{method}"
 OFFSET_FILE = STATE_DIR / "telegram_offset.json"
+FEEDBACK_PATH = STATE_DIR / "feedback.jsonl"
+LESSON_HISTORY_PATH = STATE_DIR / "lesson_history.jsonl"
 MAX_MESSAGE_LEN = 4096  # Telegram hard limit
 
 
@@ -137,6 +139,40 @@ def _answer_question(question: str, anthropic_key: str, email_context: str | Non
     return response.content[0].text
 
 
+# ---------- feedback ----------
+
+def _load_last_lesson() -> dict | None:
+    """Return the most recent entry from lesson_history.jsonl."""
+    if not LESSON_HISTORY_PATH.exists():
+        return None
+    lines = [ln.strip() for ln in LESSON_HISTORY_PATH.read_text().splitlines() if ln.strip()]
+    if not lines:
+        return None
+    try:
+        return json.loads(lines[-1])
+    except json.JSONDecodeError:
+        return None
+
+
+def _record_more() -> str:
+    """Write a 'more' feedback entry for the most recent lesson. Returns a reply message."""
+    from datetime import date
+    lesson = _load_last_lesson()
+    if not lesson:
+        return "No lesson on record yet."
+    STATE_DIR.mkdir(parents=True, exist_ok=True)
+    entry = {
+        "date": date.today().isoformat(),
+        "slug": lesson.get("slug", ""),
+        "series_ids": lesson.get("series_ids", []),
+        "rating": "more",
+    }
+    with FEEDBACK_PATH.open("a") as fh:
+        fh.write(json.dumps(entry) + "\n")
+    title = lesson.get("title") or lesson.get("slug", "that topic")
+    return f"Noted — related findings on '{title}' will surface sooner over the next 7 days."
+
+
 # ---------- offset persistence ----------
 
 def _load_offset() -> int:
@@ -202,11 +238,16 @@ def run_bot(allowed_chat_id: int) -> None:
 
             logger.info("Received: %s", text[:120])
 
+            if text.lower() == "/more":
+                _send_message(token, chat_id, _record_more())
+                continue
+
             if text.lower() in ("/start", "/help"):
                 _send_message(
                     token, chat_id,
                     "Ask me anything about macro or today's email. "
-                    "I have the text of your most recent daily email as context."
+                    "I have the text of your most recent daily email as context.\n\n"
+                    "/more — bring back related findings on today's topic sooner (7-day window)"
                 )
                 continue
 
