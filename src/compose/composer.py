@@ -550,7 +550,9 @@ def _client():
     return anthropic.Anthropic(api_key=_anthropic_key())
 
 
-MODEL = "claude-sonnet-4-6"
+MODEL = "claude-opus-4-7"
+_SONNET = "claude-sonnet-4-6"
+_HAIKU = "claude-haiku-4-5-20251001"
 
 # ---------- prompts ----------
 
@@ -986,14 +988,29 @@ def draft_email(
     client = _client()
     finding = pick.finding
 
-    user_content = (
-        f"FINDING RECORD:\n{json.dumps(_finding_to_dict(finding), indent=2)}\n\n"
-        f"DATA CONTEXT (query results — use these numbers, do not invent):\n"
-        f"{json.dumps(_ctx_to_dict(ctx), indent=2)}\n\n"
-    )
+    # Finding record and data context are marked cacheable so that subsequent calls in the
+    # same pipeline run (fact_check_draft, citation_check_draft) get ephemeral cache hits
+    # on these two large blocks instead of re-charging their full token count.
+    content_blocks: list[dict] = [
+        {
+            "type": "text",
+            "text": f"FINDING RECORD:\n{json.dumps(_finding_to_dict(finding), indent=2)}",
+            "cache_control": {"type": "ephemeral"},
+        },
+        {
+            "type": "text",
+            "text": (
+                f"DATA CONTEXT (query results — use these numbers, do not invent):\n"
+                f"{json.dumps(_ctx_to_dict(ctx), indent=2)}"
+            ),
+            "cache_control": {"type": "ephemeral"},
+        },
+    ]
+
+    tail = ""
     if pick.release_context and pick.release_context.get("releases"):
         names = [r.get("release_name", "") for r in pick.release_context["releases"][:3]]
-        user_content += (
+        tail += (
             f"UPCOMING RELEASES IN NEXT 2 DAYS: {', '.join(names)}\n"
             "Use the most relevant release as the hook anchor. In the hook, briefly explain the "
             "mechanistic link between that release and today's finding — why does it update or "
@@ -1004,16 +1021,17 @@ def draft_email(
     _kw_tokens = [w.lower() for w in _kw_source.split() if len(w) > 4]
     concept_ctx = _load_concept_context(list(finding.series_ids), keywords=_kw_tokens[:10])
     if concept_ctx:
-        user_content += f"CONCEPT CONTEXT (background on the relevant series — use for historical regime context and institutional detail):\n{concept_ctx}\n\n"
+        tail += f"CONCEPT CONTEXT (background on the relevant series — use for historical regime context and institutional detail):\n{concept_ctx}\n\n"
     if inferred_ctx:
-        user_content += (
+        tail += (
             f"CONTEXTUAL BACKGROUND DATA (FRED series inferred from finding topic — not direct evidence from the finding, "
             f"but use their current readings to anchor 'Where We Are Now'. Cite values from here as background context, "
             f"not as the finding's core claim):\n{json.dumps(_ctx_to_dict(inferred_ctx), indent=2)}\n\n"
         )
-    user_content += "Write the daily macro education email. Return only the JSON object."
+    tail += "Write the daily macro education email. Return only the JSON object."
+    content_blocks.append({"type": "text", "text": tail})
 
-    messages: list[dict] = [{"role": "user", "content": user_content}]
+    messages: list[dict] = [{"role": "user", "content": content_blocks}]
 
     if _prior_draft_html is not None:
         # Correction turn: the previous response was parsed as structurally incomplete
@@ -1051,19 +1069,31 @@ def fact_check_draft(
     """Return {"flags": [...], "approved": bool}."""
     client = _client()
 
-    merged_ctx = {**ctx, **(inferred_ctx or {})}
-    user_content = (
-        f"DRAFT (body text):\n{draft.get('body_text', '')}\n\n"
-        f"FINDING RECORD:\n{json.dumps(_finding_to_dict(pick.finding), indent=2)}\n\n"
-        f"DATA CONTEXT:\n{json.dumps(_ctx_to_dict(merged_ctx), indent=2)}\n\n"
-        "Review the draft and return the JSON result."
-    )
+    # Finding and primary data context blocks match draft_email's order and cache markers,
+    # so they get ephemeral cache hits (draft runs seconds before factcheck in the pipeline).
+    fc_blocks: list[dict] = [
+        {
+            "type": "text",
+            "text": f"FINDING RECORD:\n{json.dumps(_finding_to_dict(pick.finding), indent=2)}",
+            "cache_control": {"type": "ephemeral"},
+        },
+        {
+            "type": "text",
+            "text": f"DATA CONTEXT:\n{json.dumps(_ctx_to_dict(ctx), indent=2)}",
+            "cache_control": {"type": "ephemeral"},
+        },
+    ]
+    fc_tail = f"DRAFT (body text):\n{draft.get('body_text', '')}\n\n"
+    if inferred_ctx:
+        fc_tail += f"CONTEXTUAL BACKGROUND DATA:\n{json.dumps(_ctx_to_dict(inferred_ctx), indent=2)}\n\n"
+    fc_tail += "Review the draft and return the JSON result."
+    fc_blocks.append({"type": "text", "text": fc_tail})
 
     response = client.messages.create(
-        model=MODEL,
+        model=_SONNET,
         max_tokens=512,
         system=[{"type": "text", "text": _FACTCHECK_SYSTEM, "cache_control": {"type": "ephemeral"}}],
-        messages=[{"role": "user", "content": user_content}],
+        messages=[{"role": "user", "content": fc_blocks}],
     )
     try:
         result = _extract_json(response.content[0].text)
@@ -1175,7 +1205,7 @@ def _web_search(query: str, max_results: int = 5) -> str:
     return "\n---\n".join(results) if results else "No results found."
 
 
-def _web_fetch(url: str, max_chars: int = 6000) -> str:
+def _web_fetch(url: str, max_chars: int = 2500) -> str:
     import requests
     from bs4 import BeautifulSoup
     try:
@@ -1218,18 +1248,31 @@ def citation_check_draft(
     else:
         library_section = ""
 
-    user_content = (
-        f"EMAIL DRAFT (body text — identify mechanistic/interpretive claims to source):\n"
-        f"{draft.get('body_text', '')}\n\n"
-        f"FINDING RECORD (already-sourced claims are in finding.sources — do not re-source these):\n"
-        f"{json.dumps(_finding_to_dict(finding), indent=2)}\n\n"
-        f"{library_section}"
-        "Identify up to 3 specific mechanistic or interpretive claims in the draft that lack "
-        "primary source support. Search for the library candidates above (or do free-form web "
-        "searches if none match) to find academic papers or institutional research notes that "
-        "support each claim. Fetch the most promising URL to verify relevance. "
-        "Return JSON."
-    )
+    # Finding record cached first — matches the block order in draft_email and fact_check_draft,
+    # so this call gets an ephemeral cache hit on the finding when it runs in the same pipeline.
+    cite_blocks: list[dict] = [
+        {
+            "type": "text",
+            "text": (
+                f"FINDING RECORD (already-sourced claims are in finding.sources — do not re-source these):\n"
+                f"{json.dumps(_finding_to_dict(finding), indent=2)}"
+            ),
+            "cache_control": {"type": "ephemeral"},
+        },
+        {
+            "type": "text",
+            "text": (
+                f"EMAIL DRAFT (body text — identify mechanistic/interpretive claims to source):\n"
+                f"{draft.get('body_text', '')}\n\n"
+                f"{library_section}"
+                "Identify up to 3 specific mechanistic or interpretive claims in the draft that lack "
+                "primary source support. Search for the library candidates above (or do free-form web "
+                "searches if none match) to find academic papers or institutional research notes that "
+                "support each claim. Fetch the most promising URL to verify relevance. "
+                "Return JSON."
+            ),
+        },
+    ]
 
     tools = [
         {
@@ -1252,17 +1295,17 @@ def citation_check_draft(
         },
     ]
 
-    messages: list[dict] = [{"role": "user", "content": user_content}]
+    messages: list[dict] = [{"role": "user", "content": cite_blocks}]
 
     _CITATION_TIMEOUT_S = 90
     _start = time.monotonic()
 
-    for _ in range(10):
+    for _ in range(4):
         if time.monotonic() - _start > _CITATION_TIMEOUT_S:
             logger.warning("Citation check timed out after %ds — skipping citations", _CITATION_TIMEOUT_S)
             break
         response = client.messages.create(
-            model=MODEL,
+            model=_SONNET,
             max_tokens=2048,
             system=[{"type": "text", "text": _CITATION_SYSTEM, "cache_control": {"type": "ephemeral"}}],
             tools=tools,
@@ -1324,7 +1367,7 @@ def revise_with_citations(draft: dict, citation_result: dict) -> dict:
     )
 
     response = client.messages.create(
-        model=MODEL,
+        model=_HAIKU,
         max_tokens=4096,
         system=[{"type": "text", "text": _REVISION_SYSTEM, "cache_control": {"type": "ephemeral"}}],
         messages=[{"role": "user", "content": user_content}],
@@ -1979,53 +2022,6 @@ class ComposedEmail:
     citation_count: int = 0
 
 
-# ---------- opener rewrite pass ----------
-
-_OPENER_SYSTEM = """\
-You are editing the opening of a macro finance email. The current opener is throat-clearing: it \
-contains no information, only setup or meta-commentary about what the email is about to say.
-
-Rewrite ONLY the first paragraph (up to and including the first </p> tag) so that it opens with a \
-specific, concrete fact, number, or observation — not a statement about what the reader will see or \
-what "the usual scrutiny" will cover. The first sentence must contain information.
-
-Rules:
-- The opening must reference the actual content: a specific value, historical observation, or \
-  empirical claim.
-- Do NOT start with "The FOMC", "Today", "This week", "With the", or any phrase that defers the \
-  information to later.
-- Keep the same hook anchor (upcoming release, recent event) but make the first sentence carry \
-  informational weight.
-- Do not change anything after the first </p> tag.
-- Preserve ALL {{CHART_N}} and {{EQUATION}} placeholders exactly as-is.
-
-OUTPUT FORMAT (raw JSON, no code fence):
-{"body_html": "...", "body_text": "..."}
-"""
-
-
-def rewrite_opener(draft: dict) -> dict:
-    """Rewrite the first paragraph when the factchecker flags a throat-clearing opener."""
-    client = _client()
-    user_content = (
-        f"BODY HTML:\n{draft['body_html']}\n\n"
-        f"BODY TEXT:\n{draft.get('body_text', '')}\n\n"
-        "Rewrite the first paragraph to open with concrete information. Return JSON."
-    )
-    response = client.messages.create(
-        model=MODEL,
-        max_tokens=4096,
-        system=[{"type": "text", "text": _OPENER_SYSTEM, "cache_control": {"type": "ephemeral"}}],
-        messages=[{"role": "user", "content": user_content}],
-    )
-    try:
-        revised = _extract_json(response.content[0].text)
-        return {**draft, **revised}
-    except (ValueError, json.JSONDecodeError) as e:
-        logger.warning("Opener rewrite parse error: %s — returning original draft", e)
-        return draft
-
-
 # ---------- bolding pass ----------
 
 _BOLDING_SYSTEM = """\
@@ -2055,7 +2051,7 @@ def apply_bold_stats(draft: dict) -> dict:
         "Wrap all key statistics in <strong> tags as instructed. Return JSON."
     )
     response = client.messages.create(
-        model=MODEL,
+        model=_HAIKU,
         max_tokens=4096,
         system=[{"type": "text", "text": _BOLDING_SYSTEM, "cache_control": {"type": "ephemeral"}}],
         messages=[{"role": "user", "content": user_content}],
@@ -2122,12 +2118,6 @@ def compose_email(pick: LessonPick, today: date | None = None) -> ComposedEmail:
 
     if flags:
         logger.info("Fact-check flags (%d): %s", len(flags), "; ".join(flags))
-
-    # If factcheck caught a throat-clearing opener, rewrite the first paragraph.
-    if any("throat-clearing" in f.lower() or "clearing opener" in f.lower() for f in flags):
-        draft = rewrite_opener(draft)
-        flags = [f for f in flags if "throat-clearing" not in f.lower() and "clearing opener" not in f.lower()]
-        logger.info("Opener rewrite applied")
 
     # If factcheck caught unbolded stats, apply a targeted bolding pass before citation revision.
     if any("<strong>" in f for f in flags):
