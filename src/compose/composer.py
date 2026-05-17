@@ -293,52 +293,79 @@ def build_market_snapshot() -> list[dict]:
 
 # ── Release calendar table ────────────────────────────────────────────────────
 
-# Keyword → (short label, equity watch note).  Matched case-insensitively against release_name.
-_RELEASE_EQUITY: list[tuple[str, str, str]] = [
-    ("employment situation",    "NFP",              "Wages + payrolls drive labor-cost repricing for rate-sensitive sectors (utilities, REITs) and consumer discretionary."),
-    ("consumer price",          "CPI",              "Core surprise is the primary input to short-end rate expectations; moves rate-sensitive and inflation-linked positions."),
-    ("personal income",         "PCE / Income",     "PCE is the Fed's preferred inflation gauge; a hot print hardens the hawkish path more than an equivalent CPI beat."),
-    ("gross domestic product",  "GDP",              "Growth read: beat → cyclicals and financials; miss → defensives. Watch the consumption and investment split."),
-    ("retail sales",            "Retail Sales",     "Direct read on consumer spending; beats move consumer discretionary vs. staples spread."),
-    ("industrial production",   "IP",               "Manufacturing output; moves industrials and materials. Watch capacity utilization for capex signals."),
-    ("job openings",            "JOLTS",            "Quits rate is a leading wage-growth indicator; high openings/quits = more Fed tightening risk."),
-    ("federal open market",     "FOMC",             "Direct rate decision; equity multiples compress on surprise hikes, expand on cuts."),
-    ("producer price",          "PPI",              "Upstream cost pressure; leads margin compression in consumer-facing sectors with a 1–2 quarter lag."),
-    ("housing starts",          "Housing Starts",   "Construction activity; moves homebuilders (XHB), lumber, and mortgage-sensitive financials."),
-    ("durable goods",           "Durable Goods",    "Capex proxy (ex-defense, ex-aircraft nondefense capital goods); leads industrials and tech hardware."),
-    ("trade balance",           "Trade Balance",    "Net exports affect GDP revisions and USD; wide deficit can drag on multinationals' earnings translation."),
-    ("consumer confidence",     "Conf. Board",      "Forward consumer sentiment; leads discretionary spending by 2–3 months."),
-    ("consumer sentiment",      "UMich Sentiment",  "Inflation expectations component directly informs Fed communication and breakeven pricing."),
-    ("ism manufacturing",       "ISM Mfg",          "Purchasing managers' activity index; new orders sub-index is the primary equity signal."),
-    ("ism services",            "ISM Services",     "Services activity; employment sub-index is a soft leading indicator for NFP."),
-    ("purchasing managers",     "PMI",              "Flash PMI gives the earliest monthly read on activity; composite above/below 50 drives risk-on/off."),
-    ("beige book",              "Beige Book",       "Qualitative Fed read; usually low equity impact unless it contradicts recent hard data."),
-    ("fomc minutes",            "FOMC Minutes",     "Detailed committee debate; watch for dissent counts and language around the balance sheet."),
-    ("import price",            "Import Prices",    "Passes through to CPI goods with a ~1-month lag; USD strength mutes the signal."),
-    ("s&p/case-shiller",        "Case-Shiller",     "Home price appreciation; feeds OER component of CPI with a 12–18 month lag."),
-    ("existing home sales",     "Existing Home",    "Demand side of housing; lock-in effect depresses turnover when mortgage rates are high."),
-    ("new home sales",          "New Home Sales",   "Builder activity proxy; more timely than existing sales for construction demand."),
-    # ECB / euro area
-    ("ecb governing council",   "ECB Decision",     "Rate decision + forward guidance; EUR/USD and European bank equities are the primary movers."),
-    ("eurostat flash hicp",     "EA HICP Flash",    "EA inflation print; drives ECB rate path expectations and EUR-denominated asset repricing."),
-    ("eurostat hicp",           "EA HICP",          "EA inflation print; drives ECB rate path expectations and EUR-denominated asset repricing."),
-    ("flash hicp",              "EA HICP Flash",    "EA inflation print; drives ECB rate path expectations and EUR-denominated asset repricing."),
-    # Other G7 + Japan central banks
-    ("bank of england mpc",     "BoE Decision",     "Rate decision + MPC vote split (9 members); GBP/USD and gilt yields are the primary movers. Super Thursday meetings (Feb/May/Aug/Nov) also publish the Monetary Policy Report."),
-    ("bank of england",         "BoE Decision",     "Rate decision + MPC vote split (9 members); GBP/USD and gilt yields are the primary movers. Super Thursday meetings (Feb/May/Aug/Nov) also publish the Monetary Policy Report."),
-    ("bank of japan mpm",       "BoJ Decision",     "Rate and YCC/QQE policy decision; JPY crosses and JGB yields are the primary movers. Hawkish surprises amplify yen carry unwinds across global risk assets."),
-    ("bank of japan",           "BoJ Decision",     "Rate and YCC/QQE policy decision; JPY crosses and JGB yields are the primary movers. Hawkish surprises amplify yen carry unwinds across global risk assets."),
-    ("bank of canada",          "BoC Decision",     "Rate decision; CAD/USD and Canadian government bonds are the primary movers. MPR meetings (Jan/Apr/Jul/Oct) add growth and inflation projections. Oil price pass-through makes BoC hawkishness more commodity-linked than peers."),
-]
+# FRED release_id → (short label, one-line description of what the data measures, equity watch note).
+# Release IDs are stable integers assigned by FRED and never change when release names do.
+# Negative IDs are internal conventions for non-FRED central bank calendar entries.
+_RELEASE_ID_TO_EQUITY: dict[int, tuple[str, str, str]] = {
+    # ── US macro ────────────────────────────────────────────────────────────
+    10:  ("CPI",             "BLS monthly price index for a fixed basket of consumer goods and services.",
+                             "Core surprise is the primary input to short-end rate expectations; moves rate-sensitive and inflation-linked positions."),
+    46:  ("PPI",             "BLS monthly index of prices received by domestic producers, upstream of CPI.",
+                             "Upstream cost pressure; leads margin compression in consumer-facing sectors with a 1–2 quarter lag."),
+    50:  ("NFP",             "BLS monthly count of nonfarm payroll jobs added, with unemployment rate and wages.",
+                             "Wages + payrolls drive labor-cost repricing for rate-sensitive sectors (utilities, REITs) and consumer discretionary."),
+    54:  ("PCE / Income",    "BEA monthly personal income, spending, and the PCE price index (Fed's preferred inflation gauge).",
+                             "PCE is the Fed's preferred inflation gauge; a hot print hardens the hawkish path more than an equivalent CPI beat."),
+    53:  ("GDP",             "BEA quarterly output of all goods and services produced in the US; advance, second, and third estimates.",
+                             "Growth read: beat → cyclicals and financials; miss → defensives. Watch the consumption and investment split."),
+    9:   ("Retail Sales",    "Census advance monthly survey of retail and food-service sales; first read on consumer spending.",
+                             "Direct read on consumer spending; beats move consumer discretionary vs. staples spread."),
+    13:  ("IP",              "Fed monthly index of real output from manufacturing, mining, and utilities; includes capacity utilization.",
+                             "Manufacturing output; moves industrials and materials. Watch capacity utilization for capex signals."),
+    192: ("JOLTS",           "BLS monthly survey of job openings, hires, and separations (including quits and layoffs).",
+                             "Quits rate is a leading wage-growth indicator; high openings/quits = more Fed tightening risk."),
+    180: ("Initial Claims",  "Weekly count of first-time unemployment insurance filings; the most timely labor market read.",
+                             "Leading labor market indicator; sustained rises above trend signal deterioration before payrolls confirm."),
+    95:  ("Durable Goods",   "Census monthly orders for goods designed to last 3+ years; core capex is nondefense ex-aircraft.",
+                             "Capex proxy (ex-defense, ex-aircraft nondefense capital goods); leads industrials and tech hardware."),
+    11:  ("ECI",             "BLS quarterly index of employer costs for wages, salaries, and benefits across industries.",
+                             "Quarterly read on compensation growth; directly informs Fed wage-pressure assessment."),
+    194: ("ADP",             "ADP private-sector payroll count from payroll processing data; released two days before NFP.",
+                             "Private-sector payroll precursor; directionally useful but diverges from NFP on industry mix and revisions."),
+    51:  ("Trade Balance",   "Census/BEA monthly goods and services trade deficit or surplus.",
+                             "Net exports affect GDP revisions and USD; wide deficit can drag on multinationals' earnings translation."),
+    27:  ("Housing Starts",  "Census monthly count of new residential construction starts and building permits.",
+                             "Construction activity; moves homebuilders (XHB), lumber, and mortgage-sensitive financials."),
+    97:  ("New Home Sales",  "Census monthly sales of newly built single-family homes; more timely than existing sales.",
+                             "Builder activity proxy; more timely than existing sales for construction demand."),
+    188: ("Import Prices",   "BLS monthly index of prices for goods imported into the US.",
+                             "Passes through to CPI goods with a ~1-month lag; USD strength mutes the signal."),
+    91:  ("UMich Sentiment", "U. of Michigan monthly survey of consumer attitudes and 1- and 5-year inflation expectations.",
+                             "Inflation expectations component directly informs Fed communication and breakeven pricing."),
+    199: ("Case-Shiller",    "S&P/CoreLogic monthly repeat-sales home price index for 10 and 20 major metros.",
+                             "Home price appreciation; feeds OER component of CPI with a 12–18 month lag."),
+    351: ("Philly Fed Mfg",  "Philadelphia Fed monthly survey of manufacturing conditions in the Third District.",
+                             "New orders and shipments sub-indices are the primary equity signal. Correlated with ISM Mfg."),
+    321: ("Empire Mfg",      "NY Fed monthly survey of manufacturing conditions in New York State.",
+                             "New orders sub-index leads ISM Mfg by a few days. Correlated with broader manufacturing activity."),
+    101: ("FOMC",            "Fed policy decision on the federal funds rate target range, statement, and press conference.",
+                             "Direct rate decision; equity multiples compress on surprise hikes, expand on cuts."),
+    # ── ECB / euro area ─────────────────────────────────────────────────────
+    -10: ("ECB Decision",   "ECB Governing Council rate decision and forward guidance on the deposit facility rate.",
+                            "Rate decision + forward guidance; EUR/USD and European bank equities are the primary movers."),
+    -11: ("EA HICP Flash",  "Eurostat flash estimate of euro area HICP inflation; first print, released ~30 days after reference month.",
+                            "EA inflation print; drives ECB rate path expectations and EUR-denominated asset repricing."),
+    # ── Other G7 central banks ───────────────────────────────────────────────
+    -20: ("BoE Decision",   "Bank of England MPC rate decision, vote split, and (on Super Thursdays) Monetary Policy Report.",
+                            "Rate decision + MPC vote split (9 members); GBP/USD and gilt yields are the primary movers. Super Thursday meetings (Feb/May/Aug/Nov) also publish the Monetary Policy Report."),
+    -21: ("BoJ Decision",   "Bank of Japan monetary policy meeting decision on rates and balance-sheet operations.",
+                            "Rate and YCC/QQE policy decision; JPY crosses and JGB yields are the primary movers. Hawkish surprises amplify yen carry unwinds across global risk assets."),
+    -22: ("BoC Decision",   "Bank of Canada rate decision; MPR meetings (Jan/Apr/Jul/Oct) add growth and inflation projections.",
+                            "Rate decision; CAD/USD and Canadian government bonds are the primary movers. MPR meetings add growth and inflation projections."),
+}
+
+# Release IDs that should appear at most once in the 10-day window.
+# FOMC press release (101) is scheduled against every FRED series that gets updated
+# after an FOMC decision, so it appears on many consecutive days in the calendar.
+_SHOW_ONCE_IDS: frozenset[int] = frozenset({101})
 
 
-def _release_equity_note(release_name: str) -> tuple[str, str]:
-    """Return (short_label, equity_watch) for a release name, or generic fallback."""
-    name_lower = release_name.lower()
-    for keyword, label, note in _RELEASE_EQUITY:
-        if keyword in name_lower:
-            return label, note
-    return release_name, "—"
+def _release_equity_note(release_id: int) -> tuple[str, str, str]:
+    """Return (short_label, description, equity_watch) for a FRED release_id, or ("", "", "—") if not tracked."""
+    entry = _RELEASE_ID_TO_EQUITY.get(release_id)
+    if entry is None:
+        return "", "", "—"
+    return entry
 
 
 def build_release_calendar_table(today: date, days_ahead: int = 10) -> str:
@@ -360,15 +387,19 @@ def build_release_calendar_table(today: date, days_ahead: int = 10) -> str:
     if upcoming.empty:
         return ""
 
-    # Deduplicate by release_name per date; skip unrecognised continuous feeds
     seen: set[tuple] = set()
+    shown_once: set[int] = set()  # tracks IDs in _SHOW_ONCE_IDS already emitted
     rows_html = []
     for _, row in upcoming.iterrows():
         rdate = row["release_date"]
-        rname = str(row.get("release_name", ""))
-        label, note = _release_equity_note(rname)
+        rid = int(row.get("release_id", 0))
+        label, desc, note = _release_equity_note(rid)
         if note == "—":
-            continue  # not a recognised discrete economic release
+            continue
+        if rid in _SHOW_ONCE_IDS:
+            if rid in shown_once:
+                continue
+            shown_once.add(rid)
         key = (rdate, label)
         if key in seen:
             continue
@@ -377,9 +408,13 @@ def build_release_calendar_table(today: date, days_ahead: int = 10) -> str:
             date_str = rdate.strftime("%a %-d %b")
         else:
             date_str = str(rdate)
-        td_date  = f'<td style="font-size:11px;padding:4px 8px;white-space:nowrap;border-bottom:1px solid #e5e7eb;color:#374151;">{date_str}</td>'
-        td_label = f'<td style="font-size:11px;padding:4px 8px;white-space:nowrap;border-bottom:1px solid #e5e7eb;font-weight:600;">{label}</td>'
-        td_note  = f'<td style="font-size:11px;padding:4px 8px;border-bottom:1px solid #e5e7eb;color:#374151;">{note}</td>'
+        label_html = (
+            f'<span style="font-weight:600;">{label}</span>'
+            + (f'<br><span style="font-weight:400;color:#6b7280;">{desc}</span>' if desc else "")
+        )
+        td_date  = f'<td style="font-size:11px;padding:4px 8px;white-space:nowrap;border-bottom:1px solid #e5e7eb;color:#374151;vertical-align:top;">{date_str}</td>'
+        td_label = f'<td style="font-size:11px;padding:4px 8px;border-bottom:1px solid #e5e7eb;vertical-align:top;">{label_html}</td>'
+        td_note  = f'<td style="font-size:11px;padding:4px 8px;border-bottom:1px solid #e5e7eb;color:#374151;vertical-align:top;">{note}</td>'
         rows_html.append(f"<tr>{td_date}{td_label}{td_note}</tr>")
 
     if not rows_html:
