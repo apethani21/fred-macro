@@ -25,6 +25,12 @@ logger = logging.getLogger(__name__)
 
 ROOT_CATEGORY_ID = 0
 
+# Annual series below this FRED popularity score are dropped from the tracked universe.
+# They generate API calls on every refresh but never appear in findings or emails.
+# FRED popularity is 0-100 based on page views on stlouisfed.org.
+# Below 30 is essentially unused (8,846 of 10,094 annual series fall here).
+ANNUAL_MIN_POPULARITY = 30
+
 # Series that must always be in the tracked universe regardless of what the
 # category/release walk discovers. These anchor the market snapshot table and
 # are the series most likely to be missed by popularity-ranked discovery
@@ -233,6 +239,15 @@ def universe_by_frequency(discovery_df: pd.DataFrame) -> dict[str, list[str]]:
         discovery_df.sort_values("popularity", ascending=False, na_position="last")
         .drop_duplicates("series_id", keep="first")
     )
+    # Drop low-popularity annual series — they're structural/demographic data that
+    # never drive findings but generate thousands of FRED API calls per refresh.
+    annual_mask = (deduped["frequency_short"] == "A") & (
+        deduped["popularity"].fillna(0) < ANNUAL_MIN_POPULARITY
+    )
+    n_dropped = annual_mask.sum()
+    if n_dropped:
+        logger.info("Dropping %d annual series below popularity %d", n_dropped, ANNUAL_MIN_POPULARITY)
+    deduped = deduped[~annual_mask]
     out: dict[str, list[str]] = {}
     for freq, group in deduped.groupby("frequency_short"):
         out[freq] = group["series_id"].tolist()
