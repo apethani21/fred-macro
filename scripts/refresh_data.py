@@ -149,10 +149,9 @@ def main() -> int:
             if yf_errors:
                 exit_code = 1
 
-        # Skip FRED refresh if no FRED-specific flags were given (e.g. --yfinance-only run).
-        _fred_requested = args.series or args.discover or (
-            not args.yfinance and not args.ecb and not args.sep and not args.release_calendar
-        )
+        # --ecb / --yfinance / --sep are additive; FRED refresh always runs unless
+        # --skip-refresh is passed explicitly.
+        _fred_requested = not args.skip_refresh
 
         # --- determine universe ---
         if _fred_requested:
