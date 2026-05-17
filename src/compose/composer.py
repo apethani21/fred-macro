@@ -651,11 +651,13 @@ Hook rules (all variants): first 1–3 paragraphs, no header tag. Do NOT open wi
 CHART PLACEHOLDERS:
 - Emit {{CHART_1}}, {{CHART_2}}, and optionally {{CHART_3}} as standalone lines in body_html at the specified positions above.
 - What each chart shows depends on the finding kind (provided in FINDING RECORD below):
-  • correlation_shift / lead_lag_change: {{CHART_1}} = primary series full history; {{CHART_2}} = rolling Spearman correlation over time; {{CHART_3}} = split cross-correlogram (historical vs. recent lag structure).
-  • notable_move_level / notable_move_change / spread_extreme: {{CHART_1}} = primary series full history; {{CHART_2}} = full-history distribution histogram with current value marked. No {{CHART_3}} for these kinds.
+  • correlation_shift / lead_lag_change: {{CHART_1}} = primary series full history; {{CHART_2}} = rolling Spearman correlation over time (place after the paragraph describing the correlation shift); {{CHART_3}} = scatter plot of the two series coloured before vs after the shift date, with OLS fit lines (place after the prose that names the split date — this is the visual that makes the relationship change *visible*).
+  • notable_move_level: {{CHART_1}} = primary series full history; {{CHART_2}} = full-history distribution histogram with current value marked. No {{CHART_3}}.
+  • notable_move_change / spread_extreme: {{CHART_1}} = primary series full history; {{CHART_2}} = rolling z-score over time with ±1/2/3σ bands. No {{CHART_3}}.
   • regime_transition / btp_bund_regime: {{CHART_1}} = primary series full history; {{CHART_2}} = rolling percentile rank over time; {{CHART_3}} = full-history distribution histogram.
   • fomc_event_study: {{CHART_1}} = primary series full history; {{CHART_2}} = era comparison bar chart (path vs timing surprise share, or OLS coefficients, by Fed era). This bar chart is the analytical heart — place {{CHART_2}} immediately after the empirical paragraph that explains the era breakdown.
-  • harvested_source / structural_break: {{CHART_1}} = multi-series time plot of all referenced series (z-score normalised if units differ, otherwise raw); {{CHART_2}} = rolling percentile rank of primary series; {{CHART_3}} = full-history distribution histogram.
+  • structural_break: {{CHART_1}} = primary series full history; {{CHART_2}} = rolling z-score over time with ±1/2/3σ bands (shows when the break caused an unusual level); {{CHART_3}} = full-history distribution histogram.
+  • harvested_source: {{CHART_1}} = multi-series time plot of all referenced series (z-score normalised if units differ, otherwise raw); {{CHART_2}} = rolling z-score or rolling percentile rank of primary series (depends on how extreme the current reading is); {{CHART_3}} = full-history distribution histogram.
 - Only emit a placeholder if the chart will genuinely add information not already in the prose. Never emit a placeholder just to fill a slot.
 - Place each placeholder immediately after the paragraph it illustrates. Never place two placeholders in the same paragraph block.
 - Do not write "the chart above/below" — let the chart speak.
@@ -1772,6 +1774,87 @@ def _chart1_context_series(
         return None
 
 
+def _chart2_zscore(
+    finding: "Finding", chart_dir: Path, slug_short: str, today: date
+) -> "Path | None":
+    """Rolling z-score time series for the primary series."""
+    import matplotlib.pyplot as plt
+    from src.analytics.charts import zscore_time_series, save_to, add_source_footer
+    sid1 = list(finding.series_ids)[0]
+    try:
+        s = load_series(sid1)
+        meta = series_metadata(sid1)
+        fig, _ = zscore_time_series(
+            s,
+            title=f"{meta.get('title', sid1)} — Rolling Z-Score",
+            subtitle="z-score vs rolling window; bands at ±1, ±2, ±3σ",
+            shade_nber=True,
+        )
+        add_source_footer(fig, [sid1], today)
+        out = chart_dir / f"{today.isoformat()}_{slug_short}_chart2_z.png"
+        save_to(fig, out)
+        plt.close(fig)
+        logger.info("Chart 2 (z-score) saved: %s", out)
+        return out
+    except Exception as e:
+        logger.warning("Chart 2 (z-score) skipped: %s", e)
+        return None
+
+
+def _chart3_scatter_regime(
+    finding: "Finding", chart_dir: Path, slug_short: str, today: date
+) -> "Path | None":
+    """Scatter of series A vs B, colored before/after the relationship shifted."""
+    import matplotlib.pyplot as plt
+    from src.analytics.charts import scatter_regime, save_to, add_source_footer
+    from src.analytics.data import load_aligned
+    sids = list(finding.series_ids[:2])
+    if len(sids) < 2:
+        return None
+    ev = finding.evidence or {}
+    # Derive split date: correlation_shift emits crossed_threshold_at;
+    # structural_break emits most_recent_break_date;
+    # lead_lag_change: split at n_hist boundary (computed from aligned index).
+    split_date: str | None = (
+        ev.get("crossed_threshold_at")
+        or ev.get("most_recent_break_date")
+    )
+    try:
+        df = load_aligned(sids).dropna(how="all")
+        if df.shape[1] < 2 or len(df) < 20:
+            raise ValueError("Insufficient aligned data for scatter")
+        if split_date is None and "n_hist" in ev:
+            n_hist = int(ev["n_hist"])
+            split_idx = df.dropna().index[min(n_hist, len(df.dropna()) - 1)]
+            split_date = str(split_idx.date())
+        on_returns = bool(ev.get("on_returns", False))
+        x = df.iloc[:, 0].diff() if on_returns else df.iloc[:, 0]
+        y = df.iloc[:, 1].diff() if on_returns else df.iloc[:, 1]
+        m0 = series_metadata(sids[0])
+        m1 = series_metadata(sids[1])
+        x_label = ("Δ " if on_returns else "") + m0.get("title", sids[0])[:40]
+        y_label = ("Δ " if on_returns else "") + m1.get("title", sids[1])[:40]
+        fig, _ = scatter_regime(
+            x, y,
+            split_date=split_date,
+            title=f"{sids[0]} vs {sids[1]} — Relationship Regime",
+            subtitle=f"Split: {split_date}" if split_date else None,
+            xlabel=x_label,
+            ylabel=y_label,
+            label_pre=f"Before {split_date[:7]}" if split_date else "All",
+            label_post=f"From {split_date[:7]}" if split_date else "",
+        )
+        add_source_footer(fig, sids, today)
+        out = chart_dir / f"{today.isoformat()}_{slug_short}_chart3_scatter.png"
+        save_to(fig, out)
+        plt.close(fig)
+        logger.info("Chart 3 (scatter regime) saved: %s", out)
+        return out
+    except Exception as e:
+        logger.warning("Chart 3 (scatter regime) skipped: %s", e)
+        return None
+
+
 def _chart_sep_dot_plot(
     chart_dir: Path,
     slug_short: str,
@@ -1870,33 +1953,20 @@ def generate_charts(
     sid1 = list(finding.series_ids)[0]
     paths: list[Path] = []
 
-    # Chart 1: always primary time-series
+    # ── fomc_sep: skip default logic entirely ────────────────────────────────
+    if finding.kind == "fomc_sep":
+        p = _chart_sep_dot_plot(chart_dir, slug_short, today, chart_n=1, comparison=True)
+        if p: paths.append(p)
+        p = _chart_sep_dot_plot(chart_dir, slug_short, today, chart_n=2, comparison=False)
+        if p: paths.append(p)
+        return paths
+
+    # ── Chart 1: primary time-series (all remaining kinds) ───────────────────
     p = _chart1_primary_series(finding, chart_dir, slug_short, today)
     if p:
         paths.append(p)
 
-    # Chart 2: kind-specific
-    if finding.kind in {"correlation_shift", "lead_lag_change"} and len(finding.series_ids) >= 2:
-        p = _chart2_rolling_corr(finding, chart_dir, slug_short, today)
-        if p: paths.append(p)
-    elif finding.kind in {"notable_move_level", "notable_move_change", "spread_extreme"}:
-        # Distribution is more immediately readable than rolling percentile for single-series extremes.
-        p = _chart3_distribution(finding, ctx, chart_dir, slug_short, today, chart_n=2)
-        if p: paths.append(p)
-    elif finding.kind in {"regime_transition", "btp_bund_regime"}:
-        p = _chart2_rolling_percentile(finding, chart_dir, slug_short, today)
-        if p: paths.append(p)
-
-    # Chart 3: kind-specific
-    if finding.kind == "lead_lag_change" and len(finding.series_ids) >= 2:
-        p = _chart3_split_correlogram(finding, chart_dir, slug_short, today)
-        if p: paths.append(p)
-    elif finding.kind in {"regime_transition", "btp_bund_regime", "structural_break"}:
-        p = _chart3_distribution(finding, ctx, chart_dir, slug_short, today)
-        if p: paths.append(p)
-    # notable_move_level / notable_move_change: no chart 3 — distribution is already chart 2
-
-    # harvested_source: upgrade chart 1 to multi-series, then fill chart 2 + 3
+    # ── harvested_source: upgrade chart 1 to multi-series ────────────────────
     if finding.kind == "harvested_source" and len(finding.series_ids) >= 2:
         p = _chart1_multi_series_harvested(finding, chart_dir, slug_short, today)
         if p:
@@ -1905,29 +1975,68 @@ def generate_charts(
             else:
                 paths.append(p)
 
-    if finding.kind in {"harvested_source", "structural_break"}:
-        if len(paths) < 2:
+    # ── Chart 2: data-driven by kind ─────────────────────────────────────────
+    if finding.kind in {"correlation_shift", "lead_lag_change"} and len(finding.series_ids) >= 2:
+        # Rolling Spearman shows HOW the correlation changed over time.
+        p = _chart2_rolling_corr(finding, chart_dir, slug_short, today)
+        if p: paths.append(p)
+
+    elif finding.kind == "notable_move_level":
+        # Distribution is the right lens: WHERE in history is this reading?
+        p = _chart3_distribution(finding, ctx, chart_dir, slug_short, today, chart_n=2)
+        if p: paths.append(p)
+
+    elif finding.kind in {"notable_move_change", "spread_extreme"}:
+        # z-score time chart: the finding is about an unusual rate of change,
+        # so show the trajectory of unusualness, not a static histogram.
+        p = _chart2_zscore(finding, chart_dir, slug_short, today)
+        if p: paths.append(p)
+
+    elif finding.kind in {"regime_transition", "btp_bund_regime"}:
+        p = _chart2_rolling_percentile(finding, chart_dir, slug_short, today)
+        if p: paths.append(p)
+
+    elif finding.kind == "structural_break":
+        # z-score makes the break visible as an inflection in unusualness.
+        p = _chart2_zscore(finding, chart_dir, slug_short, today)
+        if p: paths.append(p)
+
+    elif finding.kind == "harvested_source":
+        # Data-driven: use z-score if the series is currently in an extreme
+        # regime (abs z > 2); otherwise rolling percentile tells the story.
+        snap = ctx.get(sid1)
+        z = snap.z_score if snap else None
+        if z is not None and abs(z) > 2.0:
+            p = _chart2_zscore(finding, chart_dir, slug_short, today)
+        else:
             p = _chart2_rolling_percentile(finding, chart_dir, slug_short, today)
-            if p: paths.append(p)
+        if p: paths.append(p)
+
+    elif finding.kind == "fomc_event_study":
+        p = _chart2_fomc_era_comparison(finding, chart_dir, slug_short, today)
+        if p: paths.append(p)
+
+    # ── Chart 3: data-driven by kind ─────────────────────────────────────────
+    if finding.kind in {"correlation_shift", "lead_lag_change"} and len(finding.series_ids) >= 2:
+        # Scatter with period coloring: makes the relationship change *visible*.
+        # Replaces split correlogram (which is hard to read) for lead_lag_change,
+        # and fills the previously empty chart 3 slot for correlation_shift.
+        p = _chart3_scatter_regime(finding, chart_dir, slug_short, today)
+        if p: paths.append(p)
+
+    elif finding.kind in {"regime_transition", "btp_bund_regime"}:
+        p = _chart3_distribution(finding, ctx, chart_dir, slug_short, today)
+        if p: paths.append(p)
+
+    elif finding.kind in {"harvested_source", "structural_break"}:
         if len(paths) < 3:
             p = _chart3_distribution(finding, ctx, chart_dir, slug_short, today)
             if p: paths.append(p)
 
-    # fomc_event_study: era comparison bar as chart 2; dot plot as chart 3
-    if finding.kind == "fomc_event_study":
-        p = _chart2_fomc_era_comparison(finding, chart_dir, slug_short, today)
-        if p: paths.append(p)
+    elif finding.kind == "fomc_event_study":
         if len(paths) < 3:
             p = _chart_sep_dot_plot(chart_dir, slug_short, today, chart_n=3, comparison=False)
             if p: paths.append(p)
-
-    # fomc_sep: chart 1 = comparison dot plot, chart 2 = latest with FFR line
-    if finding.kind == "fomc_sep":
-        paths = []  # override default time-series chart 1
-        p = _chart_sep_dot_plot(chart_dir, slug_short, today, chart_n=1, comparison=True)
-        if p: paths.append(p)
-        p = _chart_sep_dot_plot(chart_dir, slug_short, today, chart_n=2, comparison=False)
-        if p: paths.append(p)
 
     return paths
 

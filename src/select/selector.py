@@ -141,7 +141,8 @@ def pick_lesson(today: date | None = None, lookback_days: int = 14) -> LessonPic
         logger.warning("All findings recently taught; ignoring lookback filter.")
         eligible = all_findings
 
-    ranked = _rank(eligible)
+    kind_counts = _kind_counts_recent(7)
+    ranked = _rank(eligible, kind_counts)
     upcoming = _upcoming_releases(today, days_ahead=2)
 
     if upcoming:
@@ -277,10 +278,36 @@ def _load_more_series() -> set[str]:
     return more_series
 
 
-def _rank(findings: list[Finding]) -> list[Finding]:
+def _rank(findings: list[Finding], kind_counts_7d: dict[str, int] | None = None) -> list[Finding]:
+    counts = kind_counts_7d or {}
     def key(f: Finding) -> tuple:
-        return (_KIND_PRIORITY.get(f.kind, 99), -f.discovered.toordinal())
+        # Cooldown tier: push findings of the same kind to a lower priority
+        # after it has appeared 2+ times in the last 7 days. This prevents
+        # monotonous runs of the same kind when the backlog is deep.
+        cooldown = 1 if counts.get(f.kind, 0) >= 2 else 0
+        return (cooldown, _KIND_PRIORITY.get(f.kind, 99), -f.discovered.toordinal())
     return sorted(findings, key=key)
+
+
+def _kind_counts_recent(days: int) -> dict[str, int]:
+    """Return how many times each finding kind was taught in the last `days` days."""
+    if not LESSON_HISTORY_PATH.exists():
+        return {}
+    cutoff = (date.today() - timedelta(days=days)).isoformat()
+    counts: dict[str, int] = {}
+    for line in LESSON_HISTORY_PATH.read_text().splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            entry = json.loads(line)
+            if entry.get("date", "") >= cutoff:
+                kind = entry.get("kind", "")
+                if kind:
+                    counts[kind] = counts.get(kind, 0) + 1
+        except (json.JSONDecodeError, KeyError):
+            pass
+    return counts
 
 
 def _upcoming_releases(today: date, days_ahead: int = 2) -> list[dict]:

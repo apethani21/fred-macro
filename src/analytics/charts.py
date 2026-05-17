@@ -615,6 +615,115 @@ def era_comparison_bar(
     return fig, ax
 
 
+def zscore_time_series(
+    s: pd.Series,
+    window: int | None = None,
+    title: str = "",
+    subtitle: str | None = None,
+    shade_nber: bool = True,
+) -> tuple[Figure, Axes]:
+    """Rolling z-score of series s over time, with ±1/2/3σ reference bands.
+
+    Use when the story is 'this reading is unusually high/low *right now*' —
+    more visceral than a distribution histogram because it shows the trajectory.
+    """
+    apply_style()
+    x = s.dropna()
+    if window is None:
+        # Estimate from median gap between observations.
+        if len(x) >= 4:
+            gaps = pd.Series(x.index).diff().dt.days.dropna()
+            med_gap = float(gaps.median())
+            if med_gap < 5:
+                window = 252 * 5
+            elif med_gap < 15:
+                window = 52 * 5
+            elif med_gap < 45:
+                window = 60
+            else:
+                window = 20
+        else:
+            window = max(len(x) // 2, 4)
+
+    roll_mean = x.rolling(window, min_periods=max(window // 2, 10)).mean()
+    roll_std = x.rolling(window, min_periods=max(window // 2, 10)).std()
+    z = ((x - roll_mean) / roll_std.replace(0, float("nan"))).dropna()
+
+    fig, ax = plt.subplots(figsize=FIGSIZE_TIME_SERIES)
+    ax.fill_between(z.index, -1, 1, color="#9CA3AF", alpha=0.07)
+    for level, color, lw in [
+        (1.0,  "#9CA3AF", 0.8),
+        (2.0,  "#E69F00", 0.8),
+        (3.0,  "#D55E00", 0.7),
+    ]:
+        for sign in (1, -1):
+            ax.axhline(sign * level, color=color, linewidth=lw, linestyle=":")
+    ax.axhline(0, color="#6B7280", linewidth=0.9, linestyle="--")
+    ax.plot(z.index, z.values, color=PALETTE[0], linewidth=1.4, zorder=3)
+    ax.set_ylabel("z-score (rolling window)")
+    _set_titles(ax, title, subtitle)
+    set_date_axis(ax, z.index)
+    if shade_nber:
+        shade_recessions(ax)
+    annotate_latest(ax, z, fmt="{:+.2f}")
+    plt.tight_layout()
+    return fig, ax
+
+
+def scatter_regime(
+    x: pd.Series,
+    y: pd.Series,
+    split_date: str | pd.Timestamp | None = None,
+    title: str = "",
+    subtitle: str | None = None,
+    xlabel: str = "",
+    ylabel: str = "",
+    label_pre: str = "Before",
+    label_post: str = "After",
+) -> tuple[Figure, Axes]:
+    """Scatter of x vs y colored by period, with OLS fit lines.
+
+    Use for correlation-shift or lead-lag-change findings to show how the
+    *relationship* changed, not just that the correlation number moved.
+    If split_date is None, draws a single-colour scatter.
+    """
+    apply_style()
+    df = pd.concat([x.rename("x"), y.rename("y")], axis=1).dropna()
+    fig, ax = plt.subplots(figsize=FIGSIZE_DISTRIBUTION)
+
+    def _ols_line(sub: pd.DataFrame, color: str) -> None:
+        if len(sub) < 5:
+            return
+        m, b = np.polyfit(sub["x"].values, sub["y"].values, 1)
+        xr = np.array([sub["x"].min(), sub["x"].max()])
+        ax.plot(xr, m * xr + b, color=color, linewidth=1.8, alpha=0.85, zorder=4)
+
+    if split_date is not None:
+        sp = pd.Timestamp(split_date)
+        pre = df[df.index < sp]
+        post = df[df.index >= sp]
+        if not pre.empty:
+            ax.scatter(pre["x"], pre["y"], color=PALETTE[0], alpha=0.45, s=18,
+                       label=label_pre, zorder=2)
+            _ols_line(pre, PALETTE[0])
+        if not post.empty:
+            ax.scatter(post["x"], post["y"], color=PALETTE[1], alpha=0.65, s=22,
+                       label=label_post, zorder=3)
+            _ols_line(post, PALETTE[1])
+        ax.legend(fontsize=9, framealpha=0.9)
+    else:
+        ax.scatter(df["x"], df["y"], color=PALETTE[0], alpha=0.55, s=18, zorder=2)
+        _ols_line(df, PALETTE[0])
+
+    ax.axhline(0, color="#D1D5DB", linewidth=0.6, linestyle=":")
+    ax.axvline(0, color="#D1D5DB", linewidth=0.6, linestyle=":")
+    ax.set_xlabel(xlabel)
+    ax.set_ylabel(ylabel)
+    _set_titles(ax, title, subtitle)
+    plt.tight_layout()
+    return fig, ax
+
+
 # ---------- FOMC dot plot ----------
 
 def _dot_jitter(n: int, max_half: float = 0.28) -> np.ndarray:
